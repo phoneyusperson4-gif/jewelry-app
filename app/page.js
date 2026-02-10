@@ -59,7 +59,6 @@ export default function OrderEntry() {
   const handlePrint = () => {
     window.print()
   }
-
   return (
     <div className="max-w-xl mx-auto p-8 bg-white min-h-screen font-sans text-gray-900">
       
