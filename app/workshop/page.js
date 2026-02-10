@@ -1,177 +1,161 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { CheckCircle, Search, Package, MapPin, User } from 'lucide-react'
+import { Html5QrcodeScanner } from 'html5-qrcode'
+import { Camera, CheckCircle, Search, User, X } from 'lucide-react'
 
-// You can edit this list later to match your actual staff names
-const STAFF_MEMBERS = [
-  'Goldsmith - Station 1',
-  'Goldsmith - Station 2',
-  'Setter - Station 1',
-  'Setter - Station 2',
-  'Polishing / QC',
-  'Office / Admin'
-]
+const STAFF_MEMBERS = ['Goldsmith 1', 'Goldsmith 2', 'Setter 1', 'Setter 2', 'QC']
 
 export default function WorkshopDashboard() {
   const [searchId, setSearchId] = useState('')
   const [activeOrder, setActiveOrder] = useState(null)
+  const [staffName, setStaffName] = useState(STAFF_MEMBERS[0])
+  const [showCamera, setShowCamera] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [staffName, setStaffName] = useState(STAFF_MEMBERS[0]) // Default to first person
 
-  const findOrder = async () => {
-    setLoading(true)
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('vtiger_id', searchId.toUpperCase()) // Auto-uppercase to match format
-      .single()
-    if (data && data.current_stage === 'At Casting') {
-    alert("🛑 HOLD ON: This casting hasn't been checked in yet! Go to the Casting Arrival page first.");
-    setLoading(false);
-    return;
-  }
-    if (data) {
-      setActiveOrder(data)
-    } else {
-      alert("Order not found! Check the ID.")
+  // 1. Camera Logic
+  useEffect(() => {
+    if (showCamera) {
+      const scanner = new Html5QrcodeScanner("reader", { 
+        fps: 10, 
+        qrbox: { width: 250, height: 250 } 
+      });
+
+      scanner.render((decodedText) => {
+        setSearchId(decodedText);
+        findOrder(decodedText); // Auto-find when scanned
+        scanner.clear();
+        setShowCamera(false);
+      }, (error) => { /* Ignore errors */ });
+
+      return () => scanner.clear();
     }
-    setLoading(false)
+  }, [showCamera]);
+
+  const findOrder = async (idToSearch = searchId) => {
+    const cleanId = idToSearch.toUpperCase().trim();
+    if (!cleanId) return;
+
+    setLoading(true);
+    const { data } = await supabase
+      .from('orders')
+      .select('*, production_logs(*)')
+      .eq('vtiger_id', cleanId)
+      .single();
+
+    if (data) {
+      if (data.current_stage === 'At Casting') {
+        alert("Still at Casting House!");
+      } else {
+        setActiveOrder(data);
+      }
+    } else {
+      alert("Order not found!");
+    }
+    setLoading(false);
   }
 
   const completeStage = async () => {
-    if (!activeOrder) return
+    const stages = ['Goldsmithing', 'Setting', 'QC', 'Completed'];
+    const currentIndex = stages.indexOf(activeOrder.current_stage);
+    const nextStage = stages[currentIndex + 1] || 'Completed';
 
-    // 1. Determine Next Stage Logic
-    const current = activeOrder.current_stage
-    let nextStage = 'Completed'
+    const { error } = await supabase.from('orders').update({ current_stage: nextStage }).eq('id', activeOrder.id);
     
-    // Simple Logic Flow: Goldsmith -> Setting -> QC -> Completed
-    if (current === 'Goldsmithing') nextStage = 'Setting'
-    if (current === 'Setting') nextStage = 'QC'
-    if (current === 'QC') nextStage = 'Completed'
-
-    setLoading(true)
-
-    // 2. Save to History Log (The "Black Box")
-    const { error: logError } = await supabase
-      .from('production_logs')
-      .insert([{
+    if (!error) {
+      await supabase.from('production_logs').insert([{
         order_id: activeOrder.id,
         staff_name: staffName,
-        previous_stage: current,
+        previous_stage: activeOrder.current_stage,
         new_stage: nextStage
-      }])
-
-    // 3. Update the Actual Order Status
-    const { error: updateError } = await supabase
-      .from('orders')
-      .update({ current_stage: nextStage })
-      .eq('id', activeOrder.id)
-
-    if (!updateError) {
-      alert(`Success! Moved to ${nextStage}`)
-      setActiveOrder(null)
-      setSearchId('')
-    } else {
-      alert("Error updating order. Please try again.")
+      }]);
+      alert("Moved to " + nextStage);
+      setActiveOrder(null);
+      setSearchId('');
     }
-    setLoading(false)
   }
 
   return (
-    <div className="max-w-2xl mx-auto p-6 bg-gray-50 min-h-screen font-sans">
-      
-      {/* HEADER & STAFF SELECTOR */}
-      <header className="mb-8 flex flex-col gap-4">
-        <div>
-          <h1 className="text-3xl font-black tracking-tight text-gray-900">WORKSHOP FLOOR</h1>
-          <p className="text-gray-500 font-medium">Scan ticket to update status</p>
-        </div>
-        
-        {/* STAFF DROPDOWN */}
-        <div className="bg-white p-4 rounded-xl border-2 border-gray-200 flex items-center gap-3 shadow-sm">
-          <User className="text-blue-600" />
-          <div className="flex-1">
-            <label className="block text-xs font-bold text-gray-400 uppercase">Current User</label>
-            <select 
-              value={staffName}
-              onChange={(e) => setStaffName(e.target.value)}
-              className="w-full font-bold text-lg bg-transparent outline-none cursor-pointer"
-            >
-              {STAFF_MEMBERS.map(name => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </header>
+    <div className="max-w-2xl mx-auto p-4 bg-gray-50 min-h-screen">
+      {/* STAFF SELECTOR */}
+      <div className="mb-6 bg-white p-4 rounded-2xl border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+        <label className="text-[10px] font-black uppercase text-gray-400 flex items-center gap-1">
+          <User size={12}/> Current Staff
+        </label>
+        <select 
+          className="w-full font-black text-lg bg-transparent outline-none"
+          value={staffName} 
+          onChange={(e) => setStaffName(e.target.value)}
+        >
+          {STAFF_MEMBERS.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
 
-      {/* SEARCH/SCAN INPUT */}
+      {/* SCANNING CONTROLS */}
       {!activeOrder && (
-        <div className="relative mb-10">
-          <input 
-            type="text" 
-            placeholder="SCAN QR CODE HERE..."
-            className="w-full p-6 pl-14 border-4 border-black rounded-2xl text-2xl font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] focus:outline-none focus:ring-4 focus:ring-blue-200 transition-all"
-            value={searchId}
-            onChange={(e) => setSearchId(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && findOrder()}
-            autoFocus
-          />
-          <Search className="absolute left-5 top-7 text-gray-400" size={30} />
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input 
+                type="text" 
+                placeholder="TYPE OR SCAN ID..."
+                className="w-full p-4 border-4 border-black rounded-xl font-black uppercase text-xl"
+                value={searchId}
+                onChange={(e) => setSearchId(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && findOrder()}
+              />
+              <button onClick={() => findOrder()} className="absolute right-3 top-4 text-black">
+                <Search />
+              </button>
+            </div>
+            
+            {/* THE SCANNING BUTTON */}
+            <button 
+              onClick={() => setShowCamera(true)}
+              className="bg-blue-600 text-white p-4 rounded-xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:mt-1"
+            >
+              <Camera size={28} />
+            </button>
+          </div>
+
+          {showCamera && (
+            <div className="fixed inset-0 bg-black z-50 p-6 flex flex-col">
+              <button onClick={() => setShowCamera(false)} className="text-white self-end mb-4"><X size={40}/></button>
+              <div id="reader" className="bg-white rounded-xl overflow-hidden"></div>
+              <p className="text-white text-center mt-4 font-bold">Align QR Code inside the box</p>
+            </div>
+          )}
         </div>
       )}
 
       {/* ACTIVE JOB CARD */}
       {activeOrder && (
-        <div className="bg-white border-4 border-black p-8 rounded-3xl shadow-[10px_10px_0px_0px_rgba(0,0,0,1)] animate-in fade-in zoom-in duration-200">
-          
-          <div className="flex justify-between items-start mb-8">
+        <div className="bg-white border-4 border-black p-6 rounded-3xl shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
+          <div className="flex justify-between border-b-2 border-gray-100 pb-4 mb-4">
             <div>
-              <span className="text-xs font-black uppercase bg-blue-600 text-white px-3 py-1 rounded-md">Active Job</span>
-              <h2 className="text-5xl font-black mt-2">{activeOrder.vtiger_id}</h2>
-              <p className="text-xl text-gray-600 font-bold uppercase mt-1">{activeOrder.client_name}</p>
+              <h2 className="text-4xl font-black">{activeOrder.vtiger_id}</h2>
+              <p className="font-bold text-gray-500 uppercase">{activeOrder.client_name}</p>
             </div>
-            <div className="text-right">
-              <div className="flex items-center gap-2 text-blue-600 font-black uppercase text-sm mb-1">
-                <MapPin size={16} /> Current Station
-              </div>
-              <div className="text-2xl font-black bg-yellow-300 border-2 border-black px-4 py-2 rounded-xl">
-                {activeOrder.current_stage}
-              </div>
-            </div>
+            <span className="bg-yellow-300 border-2 border-black px-3 py-1 rounded-lg font-black h-fit text-xs">
+              {activeOrder.current_stage}
+            </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-6 bg-gray-100 p-6 rounded-2xl mb-8">
-            <div>
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Metal Type</p>
-              <p className="text-xl font-black">{activeOrder.metal_type}</p>
-            </div>
-            <div>
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-widest text-right">Ring Size</p>
-              <p className="text-xl font-black text-right">{activeOrder.ring_size}</p>
-            </div>
+          {/* HISTORY PREVIEW */}
+          <div className="mb-6">
+            <p className="text-[10px] font-black uppercase text-gray-400 mb-2">Order History</p>
+            {activeOrder.production_logs?.map((l, i) => (
+              <div key={i} className="text-xs font-bold border-l-2 border-blue-500 pl-2 mb-1">
+                {l.new_stage} by {l.staff_name}
+              </div>
+            ))}
           </div>
 
           <button 
             onClick={completeStage}
-            disabled={loading}
-            className="w-full bg-green-500 hover:bg-green-600 text-white border-4 border-black p-6 rounded-2xl font-black text-2xl flex items-center justify-center gap-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:mt-1 transition-all disabled:opacity-50"
+            className="w-full bg-green-500 text-white p-5 border-4 border-black rounded-2xl font-black text-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1"
           >
-            {loading ? 'SAVING...' : (
-              <>
-                <CheckCircle size={32} />
-                FINISH & SEND TO {activeOrder.current_stage === 'Goldsmithing' ? 'SETTER' : 'QC'}
-              </>
-            )}
-          </button>
-
-          <button 
-            onClick={() => setActiveOrder(null)}
-            className="w-full mt-6 text-gray-400 font-bold hover:text-gray-600"
-          >
-            Cancel / Go Back
+            FINISH & MOVE TO NEXT STAGE
           </button>
         </div>
       )}
