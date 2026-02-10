@@ -26,7 +26,11 @@ export default function WorkshopDashboard() {
       .select('*')
       .eq('vtiger_id', searchId.toUpperCase()) // Auto-uppercase to match format
       .single()
-    
+    if (data && data.current_stage === 'At Casting') {
+    alert("🛑 HOLD ON: This casting hasn't been checked in yet! Go to the Casting Arrival page first.");
+    setLoading(false);
+    return;
+  }
     if (data) {
       setActiveOrder(data)
     } else {

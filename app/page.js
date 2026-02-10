@@ -44,6 +44,7 @@ export default function OrderEntry() {
         ring_size: formData.ring_size,
         metal_type: formData.metal_type,
         cad_url: imagePath
+        current_stage: 'At Casting'
       }])
       .select()
 
