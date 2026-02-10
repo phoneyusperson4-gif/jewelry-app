@@ -1,69 +1,126 @@
 'use client'
 import { useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { CheckCircle, Search, Package, MapPin } from 'lucide-react'
+import { CheckCircle, Search, Package, MapPin, User } from 'lucide-react'
+
+// You can edit this list later to match your actual staff names
+const STAFF_MEMBERS = [
+  'Goldsmith - Station 1',
+  'Goldsmith - Station 2',
+  'Setter - Station 1',
+  'Setter - Station 2',
+  'Polishing / QC',
+  'Office / Admin'
+]
 
 export default function WorkshopDashboard() {
   const [searchId, setSearchId] = useState('')
   const [activeOrder, setActiveOrder] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [staffName, setStaffName] = useState(STAFF_MEMBERS[0]) // Default to first person
 
   const findOrder = async () => {
     setLoading(true)
     const { data, error } = await supabase
       .from('orders')
       .select('*')
-      .eq('vtiger_id', searchId.toUpperCase())
+      .eq('vtiger_id', searchId.toUpperCase()) // Auto-uppercase to match format
       .single()
     
     if (data) {
       setActiveOrder(data)
     } else {
-      alert("Order not found! Make sure the ID is correct.")
+      alert("Order not found! Check the ID.")
     }
     setLoading(false)
   }
 
   const completeStage = async () => {
-    // Logic to move to the next stage
-    let nextStage = 'Setting' 
-    if (activeOrder.current_stage === 'Setting') nextStage = 'QC'
-    if (activeOrder.current_stage === 'QC') nextStage = 'Completed'
+    if (!activeOrder) return
 
-    const { error } = await supabase
+    // 1. Determine Next Stage Logic
+    const current = activeOrder.current_stage
+    let nextStage = 'Completed'
+    
+    // Simple Logic Flow: Goldsmith -> Setting -> QC -> Completed
+    if (current === 'Goldsmithing') nextStage = 'Setting'
+    if (current === 'Setting') nextStage = 'QC'
+    if (current === 'QC') nextStage = 'Completed'
+
+    setLoading(true)
+
+    // 2. Save to History Log (The "Black Box")
+    const { error: logError } = await supabase
+      .from('production_logs')
+      .insert([{
+        order_id: activeOrder.id,
+        staff_name: staffName,
+        previous_stage: current,
+        new_stage: nextStage
+      }])
+
+    // 3. Update the Actual Order Status
+    const { error: updateError } = await supabase
       .from('orders')
       .update({ current_stage: nextStage })
       .eq('id', activeOrder.id)
 
-    if (!error) {
-      alert(`Order moved to ${nextStage}!`)
-      setActiveOrder(null) // Clear the screen for the next scan
+    if (!updateError) {
+      alert(`Success! Moved to ${nextStage}`)
+      setActiveOrder(null)
       setSearchId('')
+    } else {
+      alert("Error updating order. Please try again.")
     }
+    setLoading(false)
   }
 
   return (
     <div className="max-w-2xl mx-auto p-6 bg-gray-50 min-h-screen font-sans">
-      <header className="mb-8">
-        <h1 className="text-3xl font-black tracking-tight text-gray-900">WORKSHOP FLOOR</h1>
-        <p className="text-gray-500 font-medium">Scan a job ticket to update status</p>
+      
+      {/* HEADER & STAFF SELECTOR */}
+      <header className="mb-8 flex flex-col gap-4">
+        <div>
+          <h1 className="text-3xl font-black tracking-tight text-gray-900">WORKSHOP FLOOR</h1>
+          <p className="text-gray-500 font-medium">Scan ticket to update status</p>
+        </div>
+        
+        {/* STAFF DROPDOWN */}
+        <div className="bg-white p-4 rounded-xl border-2 border-gray-200 flex items-center gap-3 shadow-sm">
+          <User className="text-blue-600" />
+          <div className="flex-1">
+            <label className="block text-xs font-bold text-gray-400 uppercase">Current User</label>
+            <select 
+              value={staffName}
+              onChange={(e) => setStaffName(e.target.value)}
+              className="w-full font-bold text-lg bg-transparent outline-none cursor-pointer"
+            >
+              {STAFF_MEMBERS.map(name => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
       </header>
 
       {/* SEARCH/SCAN INPUT */}
-      <div className="relative mb-10">
-        <input 
-          type="text" 
-          placeholder="SCAN QR CODE HERE..."
-          className="w-full p-6 pl-14 border-4 border-black rounded-2xl text-2xl font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] focus:outline-none focus:ring-4 focus:ring-blue-200 transition-all"
-          value={searchId}
-          onChange={(e) => setSearchId(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && findOrder()}
-          autoFocus
-        />
-        <Search className="absolute left-5 top-7 text-gray-400" size={30} />
-      </div>
+      {!activeOrder && (
+        <div className="relative mb-10">
+          <input 
+            type="text" 
+            placeholder="SCAN QR CODE HERE..."
+            className="w-full p-6 pl-14 border-4 border-black rounded-2xl text-2xl font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] focus:outline-none focus:ring-4 focus:ring-blue-200 transition-all"
+            value={searchId}
+            onChange={(e) => setSearchId(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && findOrder()}
+            autoFocus
+          />
+          <Search className="absolute left-5 top-7 text-gray-400" size={30} />
+        </div>
+      )}
 
-      {activeOrder ? (
+      {/* ACTIVE JOB CARD */}
+      {activeOrder && (
         <div className="bg-white border-4 border-black p-8 rounded-3xl shadow-[10px_10px_0px_0px_rgba(0,0,0,1)] animate-in fade-in zoom-in duration-200">
           
           <div className="flex justify-between items-start mb-8">
@@ -82,7 +139,6 @@ export default function WorkshopDashboard() {
             </div>
           </div>
 
-          {/* SPECIFICATIONS GRID */}
           <div className="grid grid-cols-2 gap-6 bg-gray-100 p-6 rounded-2xl mb-8">
             <div>
               <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Metal Type</p>
@@ -94,13 +150,17 @@ export default function WorkshopDashboard() {
             </div>
           </div>
 
-          {/* ACTION BUTTON */}
           <button 
             onClick={completeStage}
-            className="w-full bg-green-500 hover:bg-green-600 text-white border-4 border-black p-6 rounded-2xl font-black text-2xl flex items-center justify-center gap-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:mt-1 transition-all"
+            disabled={loading}
+            className="w-full bg-green-500 hover:bg-green-600 text-white border-4 border-black p-6 rounded-2xl font-black text-2xl flex items-center justify-center gap-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:mt-1 transition-all disabled:opacity-50"
           >
-            <CheckCircle size={32} />
-            FINISH & SEND TO {activeOrder.current_stage === 'Goldsmithing' ? 'SETTER' : 'QC'}
+            {loading ? 'SAVING...' : (
+              <>
+                <CheckCircle size={32} />
+                FINISH & SEND TO {activeOrder.current_stage === 'Goldsmithing' ? 'SETTER' : 'QC'}
+              </>
+            )}
           </button>
 
           <button 
@@ -109,12 +169,6 @@ export default function WorkshopDashboard() {
           >
             Cancel / Go Back
           </button>
-
-        </div>
-      ) : (
-        <div className="text-center py-20 border-4 border-dashed border-gray-200 rounded-3xl">
-          <Package className="mx-auto text-gray-200 mb-4" size={80} />
-          <p className="text-gray-400 font-bold text-xl uppercase tracking-widest">Waiting for Scan...</p>
         </div>
       )}
     </div>
