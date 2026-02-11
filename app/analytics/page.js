@@ -1,9 +1,9 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { BarChart3, TrendingUp, AlertTriangle, CheckCircle2, User } from 'lucide-react'
+import { BarChart3, TrendingUp, AlertTriangle, CheckCircle2, User, Loader2 } from 'lucide-react'
 
-// ADDED THIS LIST HERE TO FIX THE ERROR
+// THIS MUST BE DEFINED IN THIS FILE TO PREVENT PRERENDER ERRORS
 const REDO_REASONS = ['Loose Stone', 'Polishing Issue', 'Sizing Error', 'Metal Flaw', 'Other']
 
 export default function AnalyticsPage() {
@@ -15,28 +15,39 @@ export default function AnalyticsPage() {
   }, [])
 
   const fetchAnalytics = async () => {
-    const { data } = await supabase.from('production_logs').select('*').order('created_at', { ascending: false })
+    const { data } = await supabase
+      .from('production_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+    
     if (data) setLogs(data)
     setLoading(false)
   }
 
+  // CALCULATIONS
   const redos = logs.filter(l => l.redo_reason)
   const completions = logs.filter(l => l.new_stage === 'Completed')
-
-  // LOGIC FOR STAFF PERFORMANCE
+  
   const getStaffStats = () => {
     const stats = {}
     logs.forEach(log => {
-        if (!stats[log.staff_name]) stats[log.staff_name] = { completed: 0, redos: 0 }
-        if (log.new_stage === 'Completed') stats[log.staff_name].completed++
-        if (log.redo_reason) stats[log.staff_name].redos++
+      if (!stats[log.staff_name]) stats[log.staff_name] = { completed: 0, redos: 0 }
+      if (log.new_stage === 'Completed') stats[log.staff_name].completed++
+      if (log.redo_reason) stats[log.staff_name].redos++
     })
     return stats
   }
 
   const staffStats = getStaffStats()
 
-  if (loading) return <div className="p-10 text-center font-black uppercase animate-pulse">Loading Intelligence...</div>
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen font-black uppercase tracking-widest text-gray-400">
+        <Loader2 className="animate-spin mb-4" size={48} />
+        Generating Intelligence...
+      </div>
+    )
+  }
 
   return (
     <div className="max-w-6xl mx-auto p-6 bg-white min-h-screen font-sans">
@@ -47,9 +58,9 @@ export default function AnalyticsPage() {
 
       {/* TOP ROW STATS */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-        <StatBox title="Finished This Week" value={completions.length} icon={<CheckCircle2 className="text-green-500"/>} color="bg-green-50" />
+        <StatBox title="Finished (All Time)" value={completions.length} icon={<CheckCircle2 className="text-green-500"/>} color="bg-green-50" />
         <StatBox title="Total QC Rejections" value={redos.length} icon={<AlertTriangle className="text-orange-500"/>} color="bg-orange-50" />
-        <StatBox title="Quality Rate" value={logs.length ? Math.round(((logs.length - redos.length) / logs.length) * 100) + '%' : '100%'} icon={<TrendingUp className="text-blue-500"/>} color="bg-blue-50" />
+        <StatBox title="First-Pass Yield" value={logs.length ? Math.round(((logs.length - redos.length) / logs.length) * 100) + '%' : '100%'} icon={<TrendingUp className="text-blue-500"/>} color="bg-blue-50" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
@@ -83,12 +94,12 @@ export default function AnalyticsPage() {
             <div className="grid grid-cols-3 text-[10px] font-black uppercase text-gray-400 pb-2 border-b-2 border-gray-100">
                 <span>Name</span>
                 <span className="text-center">Finished</span>
-                <span className="text-right">Redos Triggered</span>
+                <span className="text-right">Redos</span>
             </div>
             {Object.keys(staffStats).map(name => (
               <div key={name} className="grid grid-cols-3 font-bold text-sm items-center py-2 border-b border-gray-50">
-                <span className="font-black">{name}</span>
-                <span className="text-center bg-green-100 text-green-700 rounded-lg py-1 mx-4">{staffStats[name].completed}</span>
+                <span className="font-black italic">{name}</span>
+                <span className="text-center bg-green-100 text-green-700 rounded-lg py-1 mx-4 font-black">{staffStats[name].completed}</span>
                 <span className="text-right text-orange-600 font-black">{staffStats[name].redos}</span>
               </div>
             ))}
