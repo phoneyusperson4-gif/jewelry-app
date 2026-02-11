@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { Html5QrcodeScanner } from 'html5-qrcode'
-import { Camera, CheckCircle, Search, User, X } from 'lucide-react'
+import { Camera, Search, User, X } from 'lucide-react'
 
 const STAFF_MEMBERS = ['Goldsmith 1', 'Goldsmith 2', 'Setter 1', 'Setter 2', 'QC']
 
@@ -45,7 +45,7 @@ export default function WorkshopDashboard() {
 
     if (data) {
       if (data.current_stage === 'At Casting') {
-        alert("Still at Casting House!");
+        alert("🛑 STOP: This item is still at the Casting House. Go to Casting Arrival page.");
       } else {
         setActiveOrder(data);
       }
@@ -69,7 +69,7 @@ export default function WorkshopDashboard() {
         previous_stage: activeOrder.current_stage,
         new_stage: nextStage
       }]);
-      alert("Moved to " + nextStage);
+      alert("Success! Moved to " + nextStage);
       setActiveOrder(null);
       setSearchId('');
     }
@@ -77,13 +77,14 @@ export default function WorkshopDashboard() {
 
   return (
     <div className="max-w-2xl mx-auto p-4 bg-gray-50 min-h-screen">
-      {/* STAFF SELECTOR */}
+      
+      {/* HEADER & STAFF SELECTOR */}
       <div className="mb-6 bg-white p-4 rounded-2xl border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
         <label className="text-[10px] font-black uppercase text-gray-400 flex items-center gap-1">
           <User size={12}/> Current Staff
         </label>
         <select 
-          className="w-full font-black text-lg bg-transparent outline-none"
+          className="w-full font-black text-lg bg-transparent outline-none cursor-pointer"
           value={staffName} 
           onChange={(e) => setStaffName(e.target.value)}
         >
@@ -91,7 +92,7 @@ export default function WorkshopDashboard() {
         </select>
       </div>
 
-      {/* SCANNING CONTROLS */}
+      {/* SCANNING CONTROLS (Hidden when order is active) */}
       {!activeOrder && (
         <div className="space-y-4">
           <div className="flex gap-2">
@@ -109,7 +110,7 @@ export default function WorkshopDashboard() {
               </button>
             </div>
             
-            {/* THE SCANNING BUTTON */}
+            {/* CAMERA BUTTON */}
             <button 
               onClick={() => setShowCamera(true)}
               className="bg-blue-600 text-white p-4 rounded-xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:mt-1"
@@ -118,6 +119,7 @@ export default function WorkshopDashboard() {
             </button>
           </div>
 
+          {/* CAMERA OVERLAY */}
           {showCamera && (
             <div className="fixed inset-0 bg-black z-50 p-6 flex flex-col">
               <button onClick={() => setShowCamera(false)} className="text-white self-end mb-4"><X size={40}/></button>
@@ -130,32 +132,64 @@ export default function WorkshopDashboard() {
 
       {/* ACTIVE JOB CARD */}
       {activeOrder && (
-        <div className="bg-white border-4 border-black p-6 rounded-3xl shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
+        <div className={`bg-white border-4 p-6 rounded-3xl shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] ${activeOrder.is_rush ? 'border-red-600 ring-4 ring-red-200' : 'border-black'}`}>
+          
+          {/* 1. RUSH INDICATOR (RESTORED) */}
+          {activeOrder.is_rush && (
+            <div className="bg-red-600 text-white text-center py-2 -mx-6 -mt-6 mb-6 rounded-t-2xl font-black animate-pulse tracking-widest uppercase">
+              ⚠️ Priority Rush Order ⚠️
+            </div>
+          )}
+
           <div className="flex justify-between border-b-2 border-gray-100 pb-4 mb-4">
             <div>
               <h2 className="text-4xl font-black">{activeOrder.vtiger_id}</h2>
               <p className="font-bold text-gray-500 uppercase">{activeOrder.client_name}</p>
+              {/* 2. DUE DATE (RESTORED) */}
+              {activeOrder.due_date && (
+                 <p className="text-xs font-black text-red-600 mt-1 uppercase">Due: {new Date(activeOrder.due_date).toLocaleDateString()}</p>
+              )}
             </div>
             <span className="bg-yellow-300 border-2 border-black px-3 py-1 rounded-lg font-black h-fit text-xs">
               {activeOrder.current_stage}
             </span>
           </div>
 
+          {/* 3. METAL & SIZE SPECS (RESTORED) */}
+          <div className="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-xl mb-6 border-2 border-gray-100">
+            <div>
+                <p className="text-[10px] font-black uppercase text-gray-400">Metal Type</p>
+                <p className="font-bold text-lg">{activeOrder.metal_type}</p>
+            </div>
+            <div className="text-right">
+                <p className="text-[10px] font-black uppercase text-gray-400">Ring Size</p>
+                <p className="font-bold text-lg">{activeOrder.ring_size}</p>
+            </div>
+          </div>
+
           {/* HISTORY PREVIEW */}
           <div className="mb-6">
-            <p className="text-[10px] font-black uppercase text-gray-400 mb-2">Order History</p>
-            {activeOrder.production_logs?.map((l, i) => (
+            <p className="text-[10px] font-black uppercase text-gray-400 mb-2">Recent Activity</p>
+            {activeOrder.production_logs?.length > 0 ? activeOrder.production_logs.slice(0, 3).map((l, i) => (
               <div key={i} className="text-xs font-bold border-l-2 border-blue-500 pl-2 mb-1">
-                {l.new_stage} by {l.staff_name}
+                Moved to {l.new_stage} by {l.staff_name}
               </div>
-            ))}
+            )) : <p className="text-xs text-gray-300 italic">No history yet</p>}
           </div>
 
           <button 
             onClick={completeStage}
-            className="w-full bg-green-500 text-white p-5 border-4 border-black rounded-2xl font-black text-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1"
+            className="w-full bg-green-500 hover:bg-green-600 text-white p-5 border-4 border-black rounded-2xl font-black text-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1 transition-all"
           >
-            FINISH & MOVE TO NEXT STAGE
+            FINISH & SEND NEXT
+          </button>
+
+          {/* 4. CANCEL BUTTON (RESTORED) */}
+          <button 
+            onClick={() => setActiveOrder(null)}
+            className="w-full mt-4 text-gray-400 font-bold hover:text-gray-600 py-2"
+          >
+            Cancel / Go Back
           </button>
         </div>
       )}
