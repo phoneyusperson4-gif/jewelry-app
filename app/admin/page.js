@@ -1,146 +1,221 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import QRCode from 'react-qr-code'
-import { Search, Printer, History, Clock, User, ArrowRight } from 'lucide-react'
+import { Html5QrcodeScanner } from 'html5-qrcode'
+import { Camera, Search, User, X, RotateCcw, CheckCircle, BarChart3, TrendingUp, Trophy } from 'lucide-react'
 
-export default function AdminMasterView() {
+// Constants defined at the top to prevent build errors
+const STAFF_MEMBERS = ['Goldsmith 1', 'Goldsmith 2', 'Setter 1', 'Setter 2', 'QC']
+const REDO_REASONS = ['Loose Stone', 'Polishing Issue', 'Sizing Error', 'Metal Flaw', 'Other']
+
+export default function WorkshopDashboard() {
+  const [view, setView] = useState('scanner') // 'scanner' or 'stats'
   const [searchId, setSearchId] = useState('')
-  const [orders, setOrders] = useState([])
-  const [selectedOrder, setSelectedOrder] = useState(null)
-  const [logs, setLogs] = useState([])
-  const searchInputRef = useRef(null)
+  const [activeOrder, setActiveOrder] = useState(null)
+  const [staffName, setStaffName] = useState(STAFF_MEMBERS[0])
+  const [showCamera, setShowCamera] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [showRejectMenu, setShowRejectMenu] = useState(false)
+  const [allLogs, setAllLogs] = useState([])
 
+  // 1. Fetch Analytics Data
   useEffect(() => {
-    fetchOrders()
-    // Auto-focus search bar for physical scanners
-    if (searchInputRef.current) searchInputRef.current.focus()
-  }, [])
+    if (view === 'stats') fetchGlobalLogs()
+  }, [view])
 
-  const fetchOrders = async () => {
-    const { data } = await supabase.from('orders').select('*').order('created_at', { ascending: false })
-    if (data) setOrders(data)
+  const fetchGlobalLogs = async () => {
+    setLoading(true)
+    const { data } = await supabase.from('production_logs').select('*').order('created_at', { ascending: false })
+    if (data) setAllLogs(data)
+    setLoading(false)
   }
 
-  const handleSearch = async (e) => {
-    if (e) e.preventDefault()
-    const id = searchId.toUpperCase().trim()
-    const order = orders.find(o => o.vtiger_id === id)
-    if (order) {
-      viewDetails(order)
-      setSearchId('')
+  // 2. Camera Logic
+  useEffect(() => {
+    if (showCamera && view === 'scanner') {
+      const scanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: { width: 250, height: 250 } });
+      scanner.render((decodedText) => {
+        setSearchId(decodedText);
+        findOrder(decodedText);
+        scanner.clear();
+        setShowCamera(false);
+      }, (error) => {});
+      return () => scanner.clear();
+    }
+  }, [showCamera, view]);
+
+  const findOrder = async (idToSearch = searchId) => {
+    const cleanId = idToSearch.toUpperCase().trim();
+    if (!cleanId) return;
+    setLoading(true);
+    const { data } = await supabase.from('orders').select('*, production_logs(*)').eq('vtiger_id', cleanId).single();
+    if (data) {
+      if (data.current_stage === 'At Casting') alert("🛑 Still at Casting!");
+      else setActiveOrder(data);
+    } else alert("Order not found!");
+    setLoading(false);
+  }
+
+  const handleMove = async (nextStage, isRejection = false, reason = null) => {
+    const { error } = await supabase.from('orders').update({ current_stage: nextStage }).eq('id', activeOrder.id);
+    if (!error) {
+      await supabase.from('production_logs').insert([{
+        order_id: activeOrder.id,
+        staff_name: staffName,
+        previous_stage: activeOrder.current_stage,
+        new_stage: nextStage,
+        redo_reason: reason
+      }]);
+      alert(isRejection ? `⚠️ Sent back to ${nextStage}` : `✅ Moved to ${nextStage}`);
+      setActiveOrder(null);
+      setSearchId('');
+      setShowRejectMenu(false);
     }
   }
 
-  const viewDetails = async (order) => {
-    setSelectedOrder(order)
-    const { data } = await supabase
-      .from('production_logs')
-      .select('*')
-      .eq('order_id', order.id)
-      .order('created_at', { ascending: false })
-    if (data) setLogs(data)
+  // --- ANALYTICS CALCULATIONS ---
+  const redos = allLogs.filter(l => l.redo_reason)
+  const completions = allLogs.filter(l => l.new_stage === 'Completed')
+  const qualityRate = allLogs.length ? Math.round(((allLogs.length - redos.length) / allLogs.length) * 100) : 100
+
+  const getStaffStats = () => {
+    const stats = {}
+    allLogs.forEach(log => {
+      if (!stats[log.staff_name]) stats[log.staff_name] = { completed: 0, redos: 0 }
+      if (log.new_stage === 'Completed') stats[log.staff_name].completed++
+      if (log.redo_reason) stats[log.staff_name].redos++
+    })
+    return stats
   }
+  const staffStats = getStaffStats()
 
   return (
-    <div className="max-w-7xl mx-auto p-6 font-sans">
-      {/* 1. MASTER SCANNER BOX */}
-      <div className="mb-10">
-        <form onSubmit={handleSearch} className="relative max-w-2xl mx-auto">
-          <input 
-            ref={searchInputRef}
-            type="text"
-            placeholder="SCAN TICKET OR TYPE ID..."
-            className="w-full p-6 pl-14 border-4 border-black rounded-2xl text-2xl font-black uppercase shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] focus:outline-none"
-            value={searchId}
-            onChange={(e) => setSearchId(e.target.value)}
-          />
-          <Search className="absolute left-5 top-7 text-gray-400" size={30} />
-          <p className="text-[10px] font-black uppercase mt-4 text-center tracking-widest text-gray-400">
-            Scanner is active. Focus this box to use physical scanner.
-          </p>
-        </form>
+    <div className="max-w-2xl mx-auto p-4 bg-gray-50 min-h-screen pb-20">
+      
+      {/* VIEW TOGGLE */}
+      <div className="flex bg-black p-1 rounded-xl mb-6 shadow-xl border border-gray-800">
+        <button onClick={() => setView('scanner')} className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-black text-xs transition-all ${view === 'scanner' ? 'bg-white text-black shadow-inner' : 'text-gray-400'}`}>
+          <Camera size={14}/> SCANNER
+        </button>
+        <button onClick={() => setView('stats')} className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-black text-xs transition-all ${view === 'stats' ? 'bg-white text-black shadow-inner' : 'text-gray-400'}`}>
+          <BarChart3 size={14}/> SHOP ANALYTICS
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* 2. ORDER LIST */}
-        <div className="lg:col-span-1 border-4 border-black rounded-3xl overflow-hidden h-[600px] overflow-y-auto">
-          <div className="bg-black text-white p-4 font-black uppercase text-xs tracking-widest">Recent Jobs</div>
-          {orders.map(o => (
-            <div 
-              key={o.id} 
-              onClick={() => viewDetails(o)}
-              className={`p-4 border-b-2 border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${selectedOrder?.id === o.id ? 'bg-blue-50' : ''}`}
-            >
-              <div className="font-black">{o.vtiger_id}</div>
-              <div className="text-xs font-bold text-gray-400">{o.client_name}</div>
-            </div>
-          ))}
-        </div>
+      {view === 'scanner' ? (
+        <>
+          {/* STAFF SELECTOR */}
+          <div className="mb-6 bg-white p-4 rounded-2xl border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+            <label className="text-[10px] font-black uppercase text-gray-400 flex items-center gap-1"><User size={12}/> Current Staff Member</label>
+            <select className="w-full font-black text-lg bg-transparent outline-none cursor-pointer" value={staffName} onChange={(e) => setStaffName(e.target.value)}>
+              {STAFF_MEMBERS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
 
-        {/* 3. HISTORY & QR VIEW */}
-        <div className="lg:col-span-2 space-y-6">
-          {selectedOrder ? (
-            <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
-              <div className="border-4 border-black p-8 rounded-3xl bg-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-                
-                <div className="flex justify-between items-start mb-8">
-                  <div>
-                    <h2 className="text-5xl font-black leading-none">{selectedOrder.vtiger_id}</h2>
-                    <p className="text-xl font-bold text-gray-500 uppercase mt-2">{selectedOrder.client_name}</p>
-                    <div className="mt-4 flex gap-2">
-                        <span className="bg-yellow-300 border-2 border-black px-3 py-1 rounded-lg font-black text-xs uppercase">
-                            {selectedOrder.current_stage}
-                        </span>
-                    </div>
-                  </div>
-
-                  {/* QR CODE FOR RE-PRINTING */}
-                  <div className="text-center p-2 border-2 border-black rounded-xl bg-white print:block">
-                    <QRCode value={selectedOrder.vtiger_id} size={100} viewBox={`0 0 256 256`} />
-                    <button 
-                      onClick={() => window.print()}
-                      className="mt-2 text-[10px] font-black uppercase flex items-center justify-center gap-1 w-full bg-gray-100 py-1 rounded print:hidden"
-                    >
-                      <Printer size={12} /> Print
-                    </button>
-                  </div>
-                </div>
-
-                {/* TIMELINE / HISTORY */}
-                <div className="space-y-6">
-                  <h3 className="font-black uppercase text-sm flex items-center gap-2">
-                    <History size={18} /> Production History
-                  </h3>
-                  <div className="space-y-4">
-                    {logs.map((log, idx) => (
-                      <div key={idx} className="flex gap-4 items-start relative pb-4 border-l-2 border-gray-100 pl-6 ml-2">
-                        <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-black border-4 border-white" />
-                        <div className="flex-1">
-                          <div className="text-xs font-black uppercase text-blue-600 leading-none">
-                             {log.previous_stage} <ArrowRight size={10} className="inline mx-1" /> {log.new_stage}
-                          </div>
-                          <div className="flex items-center gap-4 mt-2">
-                            <div className="flex items-center gap-1 text-sm font-bold"><User size={14}/> {log.staff_name}</div>
-                            <div className="flex items-center gap-1 text-[10px] text-gray-400 font-mono"><Clock size={12}/> {new Date(log.created_at).toLocaleString()}</div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                    {logs.length === 0 && <p className="text-gray-400 italic text-sm">No moves recorded yet.</p>}
-                  </div>
-                </div>
-
-              </div>
+          {!activeOrder ? (
+            <div className="flex gap-2">
+              <input type="text" placeholder="SCAN OR TYPE ID..." className="flex-1 p-4 border-4 border-black rounded-xl font-black text-xl placeholder:text-gray-300 uppercase" value={searchId} onChange={(e) => setSearchId(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && findOrder()} />
+              <button onClick={() => setShowCamera(true)} className="bg-blue-600 text-white p-4 rounded-xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-y-1 hover:shadow-none transition-all"><Camera /></button>
+              {showCamera && <div className="fixed inset-0 bg-black z-50 p-6 flex flex-col items-center"><button onClick={() => setShowCamera(false)} className="text-white self-end mb-4"><X size={40}/></button><div id="reader" className="bg-white rounded-xl w-full max-w-sm overflow-hidden border-4 border-blue-500"></div></div>}
             </div>
           ) : (
-            <div className="h-full border-4 border-dashed border-gray-200 rounded-3xl flex items-center justify-center flex-col text-gray-300">
-              <Search size={60} className="mb-4 opacity-20" />
-              <p className="font-black uppercase tracking-widest text-sm">Scan a ticket to view history</p>
+            <div className={`bg-white border-4 p-6 rounded-3xl shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] animate-in zoom-in duration-200 ${activeOrder.is_rush ? 'border-red-600 ring-4 ring-red-100' : 'border-black'}`}>
+              <div className="flex justify-between items-start mb-6">
+                <div>
+                  <h2 className="text-4xl font-black leading-none">{activeOrder.vtiger_id}</h2>
+                  <p className="text-gray-400 font-bold text-xs uppercase mt-1">{activeOrder.client_name}</p>
+                </div>
+                <span className="bg-yellow-300 border-2 border-black px-3 py-1 rounded-lg font-black text-[10px] uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">{activeOrder.current_stage}</span>
+              </div>
+
+              <div className="space-y-3 mb-8">
+                <button onClick={() => {
+                  const stages = ['Goldsmithing', 'Setting', 'QC', 'Completed'];
+                  handleMove(stages[stages.indexOf(activeOrder.current_stage) + 1] || 'Completed');
+                }} className="w-full bg-green-500 text-white p-5 border-4 border-black rounded-2xl font-black text-xl flex items-center justify-center gap-2 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1 transition-all">
+                  <CheckCircle /> COMPLETE STAGE
+                </button>
+
+                {activeOrder.current_stage === 'QC' && !showRejectMenu && (
+                  <button onClick={() => setShowRejectMenu(true)} className="w-full bg-red-50 text-red-600 p-4 border-2 border-red-600 border-dashed rounded-2xl font-black flex items-center justify-center gap-2 transition-all">
+                    <RotateCcw size={20} /> REJECT (SEND BACK)
+                  </button>
+                )}
+
+                {showRejectMenu && (
+                  <div className="bg-red-50 p-4 rounded-2xl border-2 border-red-200 animate-in slide-in-from-top-2">
+                    <p className="text-[10px] font-black uppercase text-red-400 mb-3">Reason for Rejection</p>
+                    <div className="grid grid-cols-1 gap-2">
+                      {REDO_REASONS.map(reason => (
+                        <button key={reason} onClick={() => handleMove('Goldsmithing', true, reason)} className="bg-white p-3 border-2 border-black rounded-xl font-bold text-sm hover:bg-red-500 hover:text-white transition-all text-left">
+                          {reason}
+                        </button>
+                      ))}
+                      <button onClick={() => setShowRejectMenu(false)} className="text-xs font-bold text-gray-400 mt-2 text-center underline">Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button onClick={() => setActiveOrder(null)} className="w-full text-gray-400 font-bold py-2 text-xs uppercase tracking-widest">Exit Scanner</button>
             </div>
           )}
+        </>
+      ) : (
+        /* --- INTEGRATED STATS VIEW --- */
+        <div className="space-y-6 animate-in fade-in duration-500">
+          
+          {/* ROW 1: KEY METRICS */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-white border-4 border-black p-4 rounded-2xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+              <div className="flex justify-between items-center mb-1 text-green-600"><CheckCircle size={16}/> <span className="text-[10px] font-black uppercase">Finished</span></div>
+              <p className="text-4xl font-black">{completions.length}</p>
+            </div>
+            <div className="bg-white border-4 border-black p-4 rounded-2xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+              <div className="flex justify-between items-center mb-1 text-blue-600"><TrendingUp size={16}/> <span className="text-[10px] font-black uppercase">First-Pass</span></div>
+              <p className="text-4xl font-black">{qualityRate}%</p>
+            </div>
+          </div>
+
+          {/* ROW 2: STAFF PERFORMANCE */}
+          <div className="bg-white border-4 border-black p-6 rounded-2xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+            <h3 className="font-black uppercase text-xs mb-4 flex items-center gap-2"><Trophy size={16} className="text-yellow-500"/> Bench Performance</h3>
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 text-[10px] font-black text-gray-400 border-b-2 border-gray-100 pb-2">
+                <span>STAFF</span> <span className="text-center">FINISHED</span> <span className="text-right">REDOS</span>
+              </div>
+              {Object.keys(staffStats).map(name => (
+                <div key={name} className="grid grid-cols-3 items-center py-1 font-bold text-sm">
+                  <span className="italic">{name}</span>
+                  <span className="text-center bg-green-50 text-green-600 rounded-lg py-1 mx-4 font-black">{staffStats[name].completed}</span>
+                  <span className="text-right text-red-500">{staffStats[name].redos}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ROW 3: TOP REJECTION REASONS */}
+          <div className="bg-white border-4 border-black p-6 rounded-2xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+            <h3 className="font-black uppercase text-xs mb-4 flex items-center gap-2"><RotateCcw size={16} className="text-red-500"/> Top Issues</h3>
+            <div className="space-y-4">
+              {REDO_REASONS.map(reason => {
+                const count = redos.filter(r => r.redo_reason === reason).length
+                const pct = redos.length ? (count / redos.length) * 100 : 0
+                return (
+                  <div key={reason}>
+                    <div className="flex justify-between text-[10px] font-black uppercase mb-1">
+                      <span>{reason}</span> <span>{count}</span>
+                    </div>
+                    <div className="h-2 bg-gray-100 rounded-full border border-black overflow-hidden">
+                      <div className="h-full bg-red-500" style={{ width: `${pct}%` }}></div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
         </div>
-      </div>
+      )}
     </div>
   )
 }
