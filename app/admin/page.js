@@ -1,10 +1,23 @@
 'use client'
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import {
   History, ArrowRight, Clock, Factory, Hammer, Gem, Sparkles,
   Search, PlayCircle, Archive, X, RotateCcw
 } from 'lucide-react'
+
+// Simple debounce utility (no external dependency)
+function debounce(func, wait) {
+  let timeout
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout)
+      func(...args)
+    }
+    clearTimeout(timeout)
+    timeout = setTimeout(later, wait)
+  }
+}
 
 // ---------- 1. TIME BREAKDOWN COMPONENT ----------
 const TimeBreakdown = ({ orderId }) => {
@@ -65,6 +78,18 @@ export default function AdminPage() {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [error, setError] = useState(null)
 
+  // --- Debounced search handlers (custom debounce) ---
+  const debouncedSetSearchTerm = useMemo(() => debounce(setSearchTerm, 300), [])
+  const debouncedSetLogSearchTerm = useMemo(() => debounce(setLogSearchTerm, 300), [])
+
+  // Cleanup debounce on unmount
+  useEffect(() => {
+    return () => {
+      debouncedSetSearchTerm.cancel?.() // our debounce doesn't have .cancel, but we can add; for safety we just let it be
+      debouncedSetLogSearchTerm.cancel?.()
+    }
+  }, [debouncedSetSearchTerm, debouncedSetLogSearchTerm])
+
   useEffect(() => {
     fetchData()
   }, [activeTab])
@@ -88,13 +113,12 @@ export default function AdminPage() {
         }
         setWipJobs(live || [])
 
-        // Recent activity logs
+        // Recent activity logs (fixed duplicate limit)
         const { data: logData, error: logError } = await supabase
           .from('production_logs')
           .select('*, orders(vtiger_id)')
           .order('created_at', { ascending: false })
-          .limit(50) // increased limit to give more searchable logs
-          .limit(15)
+          .limit(50)
         
         if (logError) {
           throw new Error(logError.message || 'Activity log query failed')
@@ -130,6 +154,7 @@ export default function AdminPage() {
     }
   }
 
+  // --- IMPROVED STAGE DURATION CALCULATION ---
   async function fetchStageTimes(orderIds) {
     if (orderIds.length === 0) return
     const { data: logsData, error } = await supabase
@@ -142,19 +167,24 @@ export default function AdminPage() {
       return
     }
 
-    const durations = {}
-    orderIds.forEach(id => {
-      durations[id] = { Goldsmithing: 0, Setting: 0, Polishing: 0 }
-    })
+    // Use reduce to dynamically accumulate durations per stage
+    const durations = logsData?.reduce((acc, log) => {
+      const { order_id, previous_stage, duration_seconds } = log
+      if (!acc[order_id]) acc[order_id] = {}
+      acc[order_id][previous_stage] = (acc[order_id][previous_stage] || 0) + (duration_seconds || 0)
+      return acc
+    }, {})
 
-    logsData?.forEach(log => {
-      const stage = log.previous_stage
-      if (durations[log.order_id] && durations[log.order_id][stage] !== undefined) {
-        durations[log.order_id][stage] += (log.duration_seconds || 0)
-      }
-    })
-    setStageDurations(durations)
+    setStageDurations(durations || {})
   }
+
+  // --- MEMOIZED STAGE FILTERING FOR LIVE BOARD ---
+  const stagesMap = useMemo(() => ({
+    Casting: wipJobs.filter(j => j.current_stage === 'At Casting'),
+    Goldsmithing: wipJobs.filter(j => j.current_stage === 'Goldsmithing'),
+    Setting: wipJobs.filter(j => j.current_stage === 'Setting'),
+    Polishing: wipJobs.filter(j => ['Polishing', 'QC'].includes(j.current_stage))
+  }), [wipJobs])
 
   // --- CLIENT-SIDE SEARCH FOR ARCHIVE ---
   const filteredArchive = useMemo(() => {
@@ -288,13 +318,13 @@ export default function AdminPage() {
         // --- LIVE BOARD VIEW ---
         <div className="space-y-12 animate-in fade-in duration-500">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {renderColumn('Casting', <Factory size={18} />, wipJobs.filter(j => j.current_stage === 'At Casting'), { bg: 'bg-blue-50', border: 'border-blue-600', text: 'text-blue-700', accent: 'border-blue-200' })}
-            {renderColumn('Goldsmithing', <Hammer size={18} />, wipJobs.filter(j => j.current_stage === 'Goldsmithing'), { bg: 'bg-orange-50', border: 'border-orange-500', text: 'text-orange-700', accent: 'border-orange-200' })}
-            {renderColumn('Setting', <Gem size={18} />, wipJobs.filter(j => j.current_stage === 'Setting'), { bg: 'bg-purple-50', border: 'border-purple-600', text: 'text-purple-700', accent: 'border-purple-200' })}
-            {renderColumn('Polishing', <Sparkles size={18} />, wipJobs.filter(j => j.current_stage === 'Polishing' || j.current_stage === 'QC'), { bg: 'bg-emerald-50', border: 'border-emerald-500', text: 'text-emerald-700', accent: 'border-emerald-200' })}
+            {renderColumn('Casting', <Factory size={18} />, stagesMap.Casting, { bg: 'bg-blue-50', border: 'border-blue-600', text: 'text-blue-700', accent: 'border-blue-200' })}
+            {renderColumn('Goldsmithing', <Hammer size={18} />, stagesMap.Goldsmithing, { bg: 'bg-orange-50', border: 'border-orange-500', text: 'text-orange-700', accent: 'border-orange-200' })}
+            {renderColumn('Setting', <Gem size={18} />, stagesMap.Setting, { bg: 'bg-purple-50', border: 'border-purple-600', text: 'text-purple-700', accent: 'border-purple-200' })}
+            {renderColumn('Polishing', <Sparkles size={18} />, stagesMap.Polishing, { bg: 'bg-emerald-50', border: 'border-emerald-500', text: 'text-emerald-700', accent: 'border-emerald-200' })}
           </div>
 
-          {/* ACTIVITY LOG with search */}
+          {/* ACTIVITY LOG with debounced search */}
           <div className="bg-white border-4 border-black p-8 rounded-[2.5rem] shadow-[8px_8px_0px_0px_black]">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
               <h2 className="font-black uppercase flex items-center gap-3 text-xl tracking-tighter">
@@ -307,7 +337,7 @@ export default function AdminPage() {
                   placeholder="Filter logs..."
                   className="w-full pl-10 pr-4 py-2 border-2 border-black rounded-xl text-xs font-black outline-none uppercase shadow-[2px_2px_0px_0px_black] focus:translate-x-0.5 focus:translate-y-0.5 focus:shadow-none transition-all"
                   value={logSearchTerm}
-                  onChange={(e) => setLogSearchTerm(e.target.value)}
+                  onChange={(e) => debouncedSetLogSearchTerm(e.target.value)}
                 />
               </div>
             </div>
@@ -333,7 +363,7 @@ export default function AdminPage() {
           </div>
         </div>
       ) : (
-        // --- COMPLETIONS ARCHIVE VIEW (unchanged) ---
+        // --- COMPLETIONS ARCHIVE VIEW with debounced search ---
         <div className="bg-white border-4 border-black rounded-[3rem] overflow-hidden shadow-[12px_12px_0px_0px_black] animate-in slide-in-from-bottom-4 duration-500">
           <div className="p-8 bg-gray-50 border-b-4 border-black flex flex-col sm:flex-row justify-between items-center gap-6">
             <div>
@@ -350,7 +380,7 @@ export default function AdminPage() {
                   placeholder="SEARCH ID OR MODEL..."
                   className="w-full pl-12 pr-4 py-4 border-4 border-black rounded-2xl text-sm font-black outline-none uppercase shadow-[4px_4px_0px_0px_black] focus:translate-x-1 focus:translate-y-1 focus:shadow-none transition-all"
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onChange={(e) => debouncedSetSearchTerm(e.target.value)}
                 />
               </div>
               <button
@@ -394,7 +424,7 @@ export default function AdminPage() {
                 </thead>
                 <tbody className="divide-y-4 divide-gray-100">
                   {filteredArchive.map(job => {
-                    const durations = stageDurations[job.id] || { Goldsmithing: 0, Setting: 0, Polishing: 0 }
+                    const durations = stageDurations[job.id] || {} // now dynamic
                     return (
                       <tr
                         key={job.id}

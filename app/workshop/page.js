@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, Suspense, useRef } from 'react'
+import { useState, useEffect, Suspense, useRef, useMemo, useCallback } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import { QRCodeCanvas } from 'qrcode.react'
@@ -12,6 +12,104 @@ import {
 const STAGES = ['At Casting', 'Goldsmithing', 'Setting', 'Polishing', 'QC', 'Completed']
 const STAFF_MEMBERS = ['Goldsmith 1', 'Goldsmith 2', 'Setter 1', 'Setter 2', 'Polisher 1', 'QC']
 const REDO_REASONS = ['Loose Stone', 'Polishing Issue', 'Sizing Error', 'Metal Flaw', 'Other']
+
+// --- Helper: format time (mm:ss or hh:mm:ss) ---
+const formatTime = (totalSeconds) => {
+  const hrs = Math.floor(totalSeconds / 3600)
+  const mins = Math.floor((totalSeconds % 3600) / 60)
+  const secs = Math.floor(totalSeconds % 60)
+  if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+}
+
+// --- Helper: print QR label ---
+const printQRCode = (vtigerId, articleCode) => {
+  const printWindow = window.open('', '_blank')
+  if (!printWindow) return
+  printWindow.document.write(`
+    <html>
+      <head>
+        <title>Print Label - ${vtigerId}</title>
+        <style>
+          body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; font-family: sans-serif; }
+          .label { border: 2px solid black; padding: 20px; text-align: center; width: 250px; }
+          h2 { margin: 0; font-size: 28px; font-weight: 900; }
+          p { margin: 5px 0; font-weight: bold; text-transform: uppercase; font-size: 12px; }
+          .qr-box { margin: 15px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="label">
+          <h2>${vtigerId}</h2>
+          <p>${articleCode || 'Stock'}</p>
+          <div id="qr" class="qr-box"></div>
+          <p style="font-size: 8px;">Scan to Start/Finish Stage</p>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+        <script>
+          QRCode.toCanvas(document.getElementById('qr'), '${vtigerId}', { width: 180 }, function() {
+            window.print();
+            window.close();
+          })
+        </script>
+      </body>
+    </html>
+  `)
+  printWindow.document.close()
+}
+
+// --- Custom Hook: useCameraScanner ---
+function useCameraScanner(containerId) {
+  const scannerRef = useRef(null)
+  const [initialized, setInitialized] = useState(false)
+  const [error, setError] = useState(null)
+
+  const start = useCallback(async (onScan) => {
+    if (!scannerRef.current) {
+      scannerRef.current = new Html5Qrcode(containerId)
+    }
+    const config = { fps: 10, qrbox: { width: 250, height: 250 } }
+    try {
+      await scannerRef.current.start(
+        { facingMode: 'environment' },
+        config,
+        onScan,
+        undefined
+      )
+      setInitialized(true)
+      setError(null)
+    } catch (err) {
+      console.error('Camera start error', err)
+      setError('Could not access camera. Please check permissions.')
+      setInitialized(false)
+    }
+  }, [containerId])
+
+  const stop = useCallback(async () => {
+    if (scannerRef.current) {
+      try {
+        await scannerRef.current.stop()
+        await scannerRef.current.clear()
+      } catch (err) {
+        console.error('Error stopping camera', err)
+      }
+      scannerRef.current = null
+      setInitialized(false)
+    }
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (scannerRef.current) {
+        scannerRef.current.stop().catch(console.error)
+        scannerRef.current.clear()
+      }
+    }
+  }, [])
+
+  return { initialized, error, start, stop }
+}
 
 function WorkshopContent() {
   const searchParams = useSearchParams()
@@ -26,66 +124,33 @@ function WorkshopContent() {
   const [activeJobs, setActiveJobs] = useState([])
   const [scanMessage, setScanMessage] = useState(null)
 
-  // Camera scanner states (plain JS, no types)
+  // Camera scanner state
   const [scanMode, setScanMode] = useState('manual')
-  const [cameraInitialized, setCameraInitialized] = useState(false)
-  const [cameraError, setCameraError] = useState(null)
-  const scannerRef = useRef(null)
   const scannerContainerId = 'qr-reader'
+  const { initialized: cameraInitialized, error: cameraError, start: startCamera, stop: stopCamera } = useCameraScanner(scannerContainerId)
+
+  // Auto‑clear scanMessage after 4 seconds
+  useEffect(() => {
+    if (!scanMessage) return
+    const timer = setTimeout(() => setScanMessage(null), 4000)
+    return () => clearTimeout(timer)
+  }, [scanMessage])
 
   useEffect(() => {
     fetchActiveJobs()
   }, [])
 
-  // Cleanup camera on unmount or when switching away from camera mode
+  // Start/stop camera based on mode and tab
   useEffect(() => {
-    if (activeTab !== 'scanner' || scanMode !== 'camera') {
+    if (activeTab === 'scanner' && scanMode === 'camera') {
+      startCamera((decodedText) => {
+        processOrderId(decodedText.trim().toUpperCase())
+        if (navigator.vibrate) navigator.vibrate(200)
+      })
+    } else {
       stopCamera()
-    } else if (activeTab === 'scanner' && scanMode === 'camera' && !cameraInitialized) {
-      startCamera()
     }
-  }, [activeTab, scanMode])
-
-  const stopCamera = async () => {
-    if (scannerRef.current) {
-      try {
-        await scannerRef.current.stop()
-        scannerRef.current.clear()
-      } catch (err) {
-        console.error('Error stopping camera', err)
-      }
-      scannerRef.current = null
-      setCameraInitialized(false)
-    }
-  }
-
-  const startCamera = async () => {
-    if (!scannerRef.current) {
-      scannerRef.current = new Html5Qrcode(scannerContainerId)
-    }
-    const qrCodeSuccessCallback = (decodedText) => {
-      // Process the scanned ID
-      processOrderId(decodedText.trim().toUpperCase())
-      // Optional: beep or vibrate
-      if (navigator.vibrate) navigator.vibrate(200)
-    }
-    const config = { fps: 10, qrbox: { width: 250, height: 250 } }
-
-    try {
-      await scannerRef.current.start(
-        { facingMode: 'environment' }, // Use back camera
-        config,
-        qrCodeSuccessCallback,
-        undefined
-      )
-      setCameraInitialized(true)
-      setCameraError(null)
-    } catch (err) {
-      console.error('Camera start error', err)
-      setCameraError('Could not access camera. Please check permissions.')
-      setCameraInitialized(false)
-    }
-  }
+  }, [activeTab, scanMode, startCamera, stopCamera])
 
   const fetchActiveJobs = async () => {
     const { data } = await supabase
@@ -96,7 +161,33 @@ function WorkshopContent() {
     if (data) setActiveJobs(data)
   }
 
-  // Core logic to process a scanned/typed order ID
+  // --- Consolidated order stage update ---
+  const updateOrderStage = useCallback(async ({ order, nextStage, action, redoReason = null, durationSeconds = 0 }) => {
+    const now = new Date()
+    await supabase
+      .from('orders')
+      .update({
+        current_stage: nextStage,
+        timer_started_at: null,
+        timer_accumulated: 0,
+        updated_at: now.toISOString()
+      })
+      .eq('id', order.id)
+
+    await supabase.from('production_logs').insert([{
+      order_id: order.id,
+      staff_name: staffName,
+      action,
+      previous_stage: order.current_stage,
+      new_stage: nextStage,
+      redo_reason: redoReason,
+      duration_seconds: durationSeconds
+    }])
+
+    fetchActiveJobs()
+  }, [staffName])
+
+  // --- Process scanned/typed ID ---
   const processOrderId = async (cleanId) => {
     if (!cleanId) return
     setLoading(true)
@@ -111,14 +202,13 @@ function WorkshopContent() {
       setScanMessage({ type: 'error', text: `Order ${cleanId} not found!` })
       setSearchId('')
       setLoading(false)
-      setTimeout(() => setScanMessage(null), 3000)
       return
     }
 
     const now = new Date()
 
     if (!order.timer_started_at) {
-      // START THE JOB
+      // START
       await supabase
         .from('orders')
         .update({ timer_started_at: now.toISOString() })
@@ -136,31 +226,19 @@ function WorkshopContent() {
         text: `▶️ STARTED: ${order.vtiger_id} at ${order.current_stage}`
       })
     } else {
-      // COMPLETE THE JOB
+      // COMPLETE
       const start = new Date(order.timer_started_at)
       const durationSeconds = Math.floor((now - start) / 1000) + (order.timer_accumulated || 0)
 
       const currentIndex = STAGES.indexOf(order.current_stage)
       const nextStage = STAGES[currentIndex + 1] || 'Completed'
 
-      await supabase
-        .from('orders')
-        .update({
-          current_stage: nextStage,
-          timer_started_at: null,
-          timer_accumulated: 0,
-          updated_at: now.toISOString()
-        })
-        .eq('id', order.id)
-
-      await supabase.from('production_logs').insert([{
-        order_id: order.id,
-        staff_name: staffName,
+      await updateOrderStage({
+        order,
+        nextStage,
         action: 'COMPLETED',
-        previous_stage: order.current_stage,
-        new_stage: nextStage,
-        duration_seconds: durationSeconds
-      }])
+        durationSeconds
+      })
 
       setScanMessage({
         type: 'success',
@@ -168,10 +246,8 @@ function WorkshopContent() {
       })
     }
 
-    fetchActiveJobs()
     setSearchId('')
     setLoading(false)
-    setTimeout(() => setScanMessage(null), 4000)
   }
 
   const handleScan = () => {
@@ -182,12 +258,10 @@ function WorkshopContent() {
     if (!activeOrder) return
     setLoading(true)
 
-    // Validate stage
     const currentIndex = STAGES.indexOf(activeOrder.current_stage)
     if (currentIndex === -1) {
       setScanMessage({ type: 'error', text: `Unknown stage: ${activeOrder.current_stage}` })
       setLoading(false)
-      setTimeout(() => setScanMessage(null), 4000)
       return
     }
 
@@ -197,37 +271,19 @@ function WorkshopContent() {
     }
 
     const nextStage = isRejection ? 'Goldsmithing' : STAGES[currentIndex + 1] || 'Completed'
+    const action = isRejection ? 'REJECTED' : 'COMPLETED'
 
-    const { error } = await supabase
-      .from('orders')
-      .update({
-        current_stage: nextStage,
-        timer_started_at: null,
-        timer_accumulated: 0,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', activeOrder.id)
+    await updateOrderStage({
+      order: activeOrder,
+      nextStage,
+      action,
+      redoReason: reason,
+      durationSeconds
+    })
 
-    if (!error) {
-      await supabase.from('production_logs').insert([{
-        order_id: activeOrder.id,
-        staff_name: staffName,
-        action: isRejection ? 'REJECTED' : 'COMPLETED',
-        previous_stage: activeOrder.current_stage,
-        new_stage: nextStage,
-        redo_reason: reason,
-        duration_seconds: durationSeconds
-      }])
-
-      setActiveOrder(null)
-      setShowRejectMenu(false)
-      fetchActiveJobs()
-      setScanMessage({ type: 'success', text: `✅ Moved to ${nextStage}` })
-      setTimeout(() => setScanMessage(null), 3000)
-    } else {
-      setScanMessage({ type: 'error', text: `Failed: ${error.message}` })
-      setTimeout(() => setScanMessage(null), 4000)
-    }
+    setActiveOrder(null)
+    setShowRejectMenu(false)
+    setScanMessage({ type: 'success', text: `✅ Moved to ${nextStage}` })
     setLoading(false)
   }
 
@@ -244,39 +300,7 @@ function WorkshopContent() {
   }
 
   const handlePrintQR = () => {
-    if (!activeOrder) return
-    const printWindow = window.open('', '_blank')
-    if (!printWindow) return
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>Print Label - ${activeOrder.vtiger_id}</title>
-          <style>
-            body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; font-family: sans-serif; }
-            .label { border: 2px solid black; padding: 20px; text-align: center; width: 250px; }
-            h2 { margin: 0; font-size: 28px; font-weight: 900; }
-            p { margin: 5px 0; font-weight: bold; text-transform: uppercase; font-size: 12px; }
-            .qr-box { margin: 15px 0; }
-          </style>
-        </head>
-        <body>
-          <div class="label">
-            <h2>${activeOrder.vtiger_id}</h2>
-            <p>${activeOrder.article_code || 'Stock'}</p>
-            <div id="qr" class="qr-box"></div>
-            <p style="font-size: 8px;">Scan to Start/Finish Stage</p>
-          </div>
-          <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
-          <script>
-            QRCode.toCanvas(document.getElementById('qr'), '${activeOrder.vtiger_id}', { width: 180 }, function() {
-              window.print();
-              window.close();
-            })
-          </script>
-        </body>
-      </html>
-    `)
-    printWindow.document.close()
+    if (activeOrder) printQRCode(activeOrder.vtiger_id, activeOrder.article_code)
   }
 
   const getJobCurrentTime = (job) => {
@@ -288,15 +312,8 @@ function WorkshopContent() {
     return acc
   }
 
-  const formatTime = (totalSeconds) => {
-    const hrs = Math.floor(totalSeconds / 3600)
-    const mins = Math.floor((totalSeconds % 3600) / 60)
-    const secs = Math.floor(totalSeconds % 60)
-    if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-  }
-
-  const rushJobs = activeJobs.filter(j => j.is_rush)
+  // Memoize filtered list
+  const rushJobs = useMemo(() => activeJobs.filter(j => j.is_rush), [activeJobs])
 
   return (
     <div className="max-w-2xl mx-auto p-4 bg-gray-50 min-h-screen pb-20">
