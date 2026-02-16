@@ -19,17 +19,22 @@ function debounce(func, wait) {
   }
 }
 
-// ---------- UPDATED TIME FORMATTER ----------
+// ---------- UPDATED TIME FORMATTER (includes days) ----------
 const formatDuration = (seconds) => {
   if (!seconds || seconds <= 0) return '0m'
   if (seconds < 60) return '<1m'
-  const hrs = Math.floor(seconds / 3600)
+  const days = Math.floor(seconds / 86400)
+  const hrs = Math.floor((seconds % 86400) / 3600)
   const mins = Math.floor((seconds % 3600) / 60)
-  return hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`
+  const parts = []
+  if (days > 0) parts.push(`${days}d`)
+  if (hrs > 0) parts.push(`${hrs}h`)
+  if (mins > 0 || parts.length === 0) parts.push(`${mins}m`)
+  return parts.join(' ')
 }
 
 // ---------- 1. ENHANCED TIME BREAKDOWN COMPONENT (MODAL) ----------
-const TimeBreakdown = ({ orderId }) => {
+const TimeBreakdown = ({ order }) => {
   const [logs, setLogs] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -38,26 +43,53 @@ const TimeBreakdown = ({ orderId }) => {
       const { data } = await supabase
         .from('production_logs')
         .select('*')
-        .eq('order_id', orderId)
+        .eq('order_id', order.id)
         .order('created_at', { ascending: true })
       if (data) setLogs(data)
       setLoading(false)
     }
     fetchLogs()
-  }, [orderId])
+  }, [order.id])
 
-  // Aggregate totals for the summary
+  if (loading) return <div className="animate-pulse text-[10px] font-black uppercase text-gray-400 mt-4">Calculating...</div>
+
+  // Calculate total time (from creation to now/completion)
+  const start = new Date(order.created_at).getTime()
+  const end = order.current_stage === 'Completed'
+    ? new Date(order.updated_at).getTime()
+    : Date.now()
+  const totalSeconds = Math.max(0, Math.floor((end - start) / 1000))
+
+  // Sum of all stage durations (active work)
+  const activeSeconds = logs.reduce((acc, log) => acc + (log.duration_seconds || 0), 0)
+  const waitingSeconds = Math.max(0, totalSeconds - activeSeconds)
+
+  // Aggregate totals per stage for summary
   const summary = logs.reduce((acc, log) => {
     const stage = log.previous_stage || 'Unknown'
     acc[stage] = (acc[stage] || 0) + (log.duration_seconds || 0)
     return acc
   }, {})
 
-  if (loading) return <div className="animate-pulse text-[10px] font-black uppercase text-gray-400 mt-4">Calculating...</div>
-
   return (
     <div className="mt-6 space-y-6">
-      {/* Summary Totals */}
+      {/* Overall time summary */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="bg-gray-50 border-2 border-black p-2 rounded-xl text-center">
+          <p className="text-[8px] font-black uppercase text-gray-400">Total</p>
+          <p className="text-xs font-black">{formatDuration(totalSeconds)}</p>
+        </div>
+        <div className="bg-gray-50 border-2 border-black p-2 rounded-xl text-center">
+          <p className="text-[8px] font-black uppercase text-gray-400">Active</p>
+          <p className="text-xs font-black">{formatDuration(activeSeconds)}</p>
+        </div>
+        <div className="bg-gray-50 border-2 border-black p-2 rounded-xl text-center">
+          <p className="text-[8px] font-black uppercase text-gray-400">Waiting</p>
+          <p className="text-xs font-black">{formatDuration(waitingSeconds)}</p>
+        </div>
+      </div>
+
+      {/* Stage totals */}
       <div className="grid grid-cols-3 gap-2">
         {['Goldsmithing', 'Setting', 'Polishing'].map(s => (
           <div key={s} className="bg-gray-50 border-2 border-black p-2 rounded-xl text-center">
@@ -78,6 +110,9 @@ const TimeBreakdown = ({ orderId }) => {
               <span className="font-bold uppercase">
                 {log.action === 'REJECTED' && <span className="text-red-600">REDO: </span>}
                 {log.previous_stage} <span className="text-gray-400">by</span> {log.staff_name}
+                <span className="text-gray-400 ml-2 text-[9px]">
+                  {new Date(log.created_at).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </span>
               </span>
               <span className="font-mono font-black bg-blue-50 px-2 py-0.5 rounded text-blue-700">
                 {formatDuration(log.duration_seconds)}
@@ -169,7 +204,7 @@ export default function AdminPage() {
     }
   }
 
-  // --- IMPROVED STAGE DURATION CALCULATION (dynamic + total) ---
+  // Stage duration calculation (dynamic + total)
   async function fetchStageTimes(orderIds) {
     if (!orderIds || orderIds.length === 0) return
 
@@ -184,7 +219,6 @@ export default function AdminPage() {
         return
       }
 
-      // Build dynamic durations object, including a total
       const durations = {}
       logsData?.forEach(log => {
         const id = log.order_id
@@ -192,7 +226,6 @@ export default function AdminPage() {
         const stage = log.previous_stage
         const secs = Number(log.duration_seconds) || 0
 
-        // Only add to the columns we render in the table
         if (stage === 'Goldsmithing') durations[id].Goldsmithing += secs
         if (stage === 'Setting') durations[id].Setting += secs
         if (stage === 'Polishing' || stage === 'QC') durations[id].Polishing += secs
@@ -246,7 +279,7 @@ export default function AdminPage() {
     return formatDuration(totalSecs)
   }
 
-  // Kanban column renderer (unchanged)
+  // Kanban column renderer
   const renderColumn = (title, icon, jobs, color) => (
     <div className={`${color.bg} border-4 ${color.border} rounded-[2rem] p-5 shadow-[6px_6px_0px_0px_black]`}>
       <div className={`flex items-center gap-2 ${color.text} mb-4 border-b-4 ${color.accent} pb-3 font-black uppercase text-xs tracking-tighter`}>
@@ -275,7 +308,7 @@ export default function AdminPage() {
   return (
     <div className="max-w-[90rem] mx-auto p-6 space-y-8 pb-20 relative font-sans">
 
-      {/* JOB DETAIL MODAL (now uses enhanced TimeBreakdown) */}
+      {/* JOB DETAIL MODAL (now passes full order) */}
       {hoveredOrder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
           <div className="bg-white border-[6px] border-black p-8 rounded-[3rem] shadow-[20px_20px_0px_0px_rgba(0,0,0,1)] w-full max-w-lg animate-in zoom-in duration-150">
@@ -292,7 +325,7 @@ export default function AdminPage() {
               </button>
             </div>
 
-            <TimeBreakdown orderId={hoveredOrder.id} />
+            <TimeBreakdown order={hoveredOrder} />
 
             <div className="mt-8 grid grid-cols-2 gap-3">
               <div className="bg-gray-50 border-2 border-black p-3 rounded-2xl flex flex-col items-center">
@@ -382,7 +415,7 @@ export default function AdminPage() {
           </div>
         </div>
       ) : (
-        // --- COMPLETIONS ARCHIVE VIEW (uses improved durations) ---
+        // --- COMPLETIONS ARCHIVE VIEW (unchanged) ---
         <div className="bg-white border-4 border-black rounded-[3rem] overflow-hidden shadow-[12px_12px_0px_0px_black] animate-in slide-in-from-bottom-4 duration-500">
           <div className="p-8 bg-gray-50 border-b-4 border-black flex flex-col sm:flex-row justify-between items-center gap-6">
             <div>

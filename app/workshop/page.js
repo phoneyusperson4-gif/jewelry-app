@@ -59,13 +59,19 @@ const printQRCode = (vtigerId, articleCode) => {
   printWindow.document.close()
 }
 
-// --- Custom Hook: useCameraScanner ---
+// --- Custom Hook: useCameraScanner (fixed) ---
 function useCameraScanner(containerId) {
   const scannerRef = useRef(null)
   const [initialized, setInitialized] = useState(false)
   const [error, setError] = useState(null)
+  const onScanRef = useRef(null)
 
-  const start = useCallback(async (onScan) => {
+  // Set the callback that will be used on each scan
+  const setOnScan = useCallback((callback) => {
+    onScanRef.current = callback
+  }, [])
+
+  const start = useCallback(async () => {
     if (!scannerRef.current) {
       scannerRef.current = new Html5Qrcode(containerId)
     }
@@ -74,7 +80,9 @@ function useCameraScanner(containerId) {
       await scannerRef.current.start(
         { facingMode: 'environment' },
         config,
-        onScan,
+        (decodedText) => {
+          if (onScanRef.current) onScanRef.current(decodedText)
+        },
         undefined
       )
       setInitialized(true)
@@ -109,7 +117,7 @@ function useCameraScanner(containerId) {
     }
   }, [])
 
-  return { initialized, error, start, stop }
+  return { initialized, error, start, stop, setOnScan }
 }
 
 function WorkshopContent() {
@@ -130,7 +138,18 @@ function WorkshopContent() {
   // Camera scanner state
   const [scanMode, setScanMode] = useState('manual')
   const scannerContainerId = 'qr-reader'
-  const { initialized: cameraInitialized, error: cameraError, start: startCamera, stop: stopCamera } = useCameraScanner(scannerContainerId)
+  const { initialized: cameraInitialized, error: cameraError, start: startCamera, stop: stopCamera, setOnScan } = useCameraScanner(scannerContainerId)
+
+  // Stable scan handler
+  const handleDecodedText = useCallback((decodedText) => {
+    processOrderId(decodedText.trim().toUpperCase())
+    if (navigator.vibrate) navigator.vibrate(200)
+  }, [])
+
+  // Set the scan callback once when the component mounts or handleDecodedText changes
+  useEffect(() => {
+    setOnScan(handleDecodedText)
+  }, [setOnScan, handleDecodedText])
 
   // Auto‑clear scanMessage after 4 seconds
   useEffect(() => {
@@ -163,15 +182,12 @@ function WorkshopContent() {
   // Start/stop camera based on mode, tab, and cooldown
   useEffect(() => {
     const shouldRunCamera = activeTab === 'scanner' && scanMode === 'camera' && cooldownRemaining === 0
-    if (shouldRunCamera) {
-      startCamera((decodedText) => {
-        processOrderId(decodedText.trim().toUpperCase())
-        if (navigator.vibrate) navigator.vibrate(200)
-      })
-    } else {
+    if (shouldRunCamera && !cameraInitialized) {
+      startCamera()
+    } else if (!shouldRunCamera && cameraInitialized) {
       stopCamera()
     }
-  }, [activeTab, scanMode, cooldownRemaining, startCamera, stopCamera])
+  }, [activeTab, scanMode, cooldownRemaining, cameraInitialized, startCamera, stopCamera])
 
   const fetchActiveJobs = async () => {
     const { data } = await supabase
@@ -419,7 +435,7 @@ function WorkshopContent() {
                       ? 'bg-black text-white border-black'
                       : 'bg-white text-gray-400 border-gray-300'
                   }`}
-                  disabled={cooldownRemaining > 0} // optional: disable toggle during cooldown
+                  disabled={cooldownRemaining > 0}
                 >
                   <Keyboard size={14} /> MANUAL
                 </button>
