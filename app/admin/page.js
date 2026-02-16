@@ -19,7 +19,7 @@ function debounce(func, wait) {
   }
 }
 
-// ---------- UPDATED TIME FORMATTER (includes days) ----------
+// Time formatter with days
 const formatDuration = (seconds) => {
   if (!seconds || seconds <= 0) return '0m'
   if (seconds < 60) return '<1m'
@@ -33,7 +33,7 @@ const formatDuration = (seconds) => {
   return parts.join(' ')
 }
 
-// ---------- 1. ENHANCED TIME BREAKDOWN COMPONENT (MODAL) ----------
+// ---------- ENHANCED TIME BREAKDOWN WITH TIMELINE ----------
 const TimeBreakdown = ({ order }) => {
   const [logs, setLogs] = useState([])
   const [loading, setLoading] = useState(true)
@@ -53,18 +53,65 @@ const TimeBreakdown = ({ order }) => {
 
   if (loading) return <div className="animate-pulse text-[10px] font-black uppercase text-gray-400 mt-4">Calculating...</div>
 
-  // Calculate total time (from creation to now/completion)
-  const start = new Date(order.created_at).getTime()
-  const end = order.current_stage === 'Completed'
+  // Overall time frame
+  const startTime = new Date(order.created_at).getTime()
+  const endTime = order.current_stage === 'Completed'
     ? new Date(order.updated_at).getTime()
     : Date.now()
-  const totalSeconds = Math.max(0, Math.floor((end - start) / 1000))
+  const totalSeconds = Math.max(0, Math.floor((endTime - startTime) / 1000))
 
-  // Sum of all stage durations (active work)
-  const activeSeconds = logs.reduce((acc, log) => acc + (log.duration_seconds || 0), 0)
-  const waitingSeconds = Math.max(0, totalSeconds - activeSeconds)
+  // Build timeline: interleave waiting and stage entries
+  const timeline = []
+  let prevEnd = startTime
 
-  // Aggregate totals per stage for summary
+  logs.forEach((log) => {
+    const logTime = new Date(log.created_at).getTime()
+    const stageSeconds = log.duration_seconds || 0
+    const stageStart = logTime - stageSeconds * 1000
+
+    // Waiting before this stage (if any)
+    const waitSeconds = Math.max(0, Math.floor((stageStart - prevEnd) / 1000))
+    if (waitSeconds > 0) {
+      timeline.push({
+        type: 'wait',
+        name: 'Waiting',
+        seconds: waitSeconds,
+        from: new Date(prevEnd),
+        to: new Date(stageStart)
+      })
+    }
+
+    // The stage itself
+    timeline.push({
+      type: 'stage',
+      name: log.previous_stage || 'Unknown',
+      seconds: stageSeconds,
+      staff: log.staff_name,
+      isRedo: log.action === 'REJECTED',
+      from: new Date(stageStart),
+      to: new Date(logTime)
+    })
+
+    prevEnd = logTime
+  })
+
+  // Final waiting after last stage
+  const finalWaitSeconds = Math.max(0, Math.floor((endTime - prevEnd) / 1000))
+  if (finalWaitSeconds > 0) {
+    timeline.push({
+      type: 'wait',
+      name: 'Waiting',
+      seconds: finalWaitSeconds,
+      from: new Date(prevEnd),
+      to: new Date(endTime)
+    })
+  }
+
+  // Totals from timeline
+  const activeSeconds = timeline.filter(t => t.type === 'stage').reduce((acc, t) => acc + t.seconds, 0)
+  const waitingSeconds = timeline.filter(t => t.type === 'wait').reduce((acc, t) => acc + t.seconds, 0)
+
+  // Stage totals (for the small cards)
   const summary = logs.reduce((acc, log) => {
     const stage = log.previous_stage || 'Unknown'
     acc[stage] = (acc[stage] || 0) + (log.duration_seconds || 0)
@@ -99,24 +146,46 @@ const TimeBreakdown = ({ order }) => {
         ))}
       </div>
 
-      {/* Chronological History */}
+      {/* Detailed Timeline */}
       <div className="border-t-4 border-black pt-4">
         <h4 className="font-black text-[10px] mb-3 uppercase text-gray-400 tracking-widest flex items-center gap-2">
-          <History size={12}/> Detailed Log
+          <History size={12}/> Timeline (with waiting)
         </h4>
-        <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
-          {logs.map((log, i) => (
-            <div key={i} className="flex justify-between items-center text-[11px] py-2 border-b-2 border-gray-100 last:border-0">
-              <span className="font-bold uppercase">
-                {log.action === 'REJECTED' && <span className="text-red-600">REDO: </span>}
-                {log.previous_stage} <span className="text-gray-400">by</span> {log.staff_name}
-                <span className="text-gray-400 ml-2 text-[9px]">
-                  {new Date(log.created_at).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+        <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
+          {timeline.map((item, i) => (
+            <div
+              key={i}
+              className={`flex justify-between items-center text-[11px] py-2 border-b-2 border-gray-100 last:border-0 ${
+                item.type === 'wait' ? 'opacity-70' : ''
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                {item.type === 'wait' ? (
+                  <span className="w-2 h-2 rounded-full bg-gray-400" />
+                ) : (
+                  <span className="w-2 h-2 rounded-full bg-blue-500" />
+                )}
+                <span className="font-bold uppercase">
+                  {item.type === 'wait' ? (
+                    <>⏳ Waiting</>
+                  ) : (
+                    <>
+                      {item.isRedo && <span className="text-red-600">REDO: </span>}
+                      {item.name}
+                      {item.staff && <span className="text-gray-400 ml-1">({item.staff})</span>}
+                    </>
+                  )}
                 </span>
-              </span>
-              <span className="font-mono font-black bg-blue-50 px-2 py-0.5 rounded text-blue-700">
-                {formatDuration(log.duration_seconds)}
-              </span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-[9px] text-gray-500">
+                  {item.from.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} –{' '}
+                  {item.to.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+                <span className="font-mono font-black bg-blue-50 px-2 py-0.5 rounded text-blue-700">
+                  {formatDuration(item.seconds)}
+                </span>
+              </div>
             </div>
           ))}
         </div>
@@ -125,7 +194,7 @@ const TimeBreakdown = ({ order }) => {
   )
 }
 
-// ---------- 2. MAIN ADMIN PAGE ----------
+// ---------- MAIN ADMIN PAGE ----------
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState('live')
   const [logs, setLogs] = useState([])
@@ -281,11 +350,11 @@ export default function AdminPage() {
 
   // Kanban column renderer
   const renderColumn = (title, icon, jobs, color) => (
-    <div className={`${color.bg} border-4 ${color.border} rounded-4xl5 shadow-[6px_6px_0px_0px_black]`}>
+    <div className={`${color.bg} border-4 ${color.border} rounded-[2rem] p-5 shadow-[6px_6px_0px_0px_black]`}>
       <div className={`flex items-center gap-2 ${color.text} mb-4 border-b-4 ${color.accent} pb-3 font-black uppercase text-xs tracking-tighter`}>
         {icon} {title} ({jobs.length})
       </div>
-      <div className="space-y-3 overflow-y-auto max-h-150 pr-1">
+      <div className="space-y-3 overflow-y-auto max-h-[600px] pr-1">
         {jobs.map(job => (
           <div
             key={job.id}
@@ -306,7 +375,7 @@ export default function AdminPage() {
   )
 
   return (
-    <div className="max-w-360 mx-auto p-6 space-y-8 pb-20 relative font-sans">
+    <div className="max-w-[90rem] mx-auto p-6 space-y-8 pb-20 relative font-sans">
 
       {/* JOB DETAIL MODAL (now passes full order) */}
       {hoveredOrder && (
@@ -341,7 +410,7 @@ export default function AdminPage() {
         </div>
       )}
 
-      {/* TABS & HEADER (unchanged) */}
+      {/* TABS & HEADER */}
       <div className="flex flex-col md:flex-row md:items-center justify-between border-b-8 border-black pb-6 gap-4">
         <h1 className="text-4xl md:text-5xl font-black uppercase tracking-tighter">Atelier OS</h1>
         <div className="flex bg-black p-1.5 rounded-2xl shadow-[4px_4px_0px_0px_rgba(0,0,0,0.2)]">
@@ -368,7 +437,7 @@ export default function AdminPage() {
       )}
 
       {activeTab === 'live' ? (
-        // --- LIVE BOARD VIEW (unchanged) ---
+        // --- LIVE BOARD VIEW ---
         <div className="space-y-12 animate-in fade-in duration-500">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {renderColumn('Casting', <Factory size={18} />, stagesMap.Casting, { bg: 'bg-blue-50', border: 'border-blue-600', text: 'text-blue-700', accent: 'border-blue-200' })}
@@ -377,7 +446,7 @@ export default function AdminPage() {
             {renderColumn('Polishing', <Sparkles size={18} />, stagesMap.Polishing, { bg: 'bg-emerald-50', border: 'border-emerald-500', text: 'text-emerald-700', accent: 'border-emerald-200' })}
           </div>
 
-          {/* ACTIVITY LOG with debounced search (unchanged) */}
+          {/* ACTIVITY LOG with debounced search */}
           <div className="bg-white border-4 border-black p-8 rounded-[2.5rem] shadow-[8px_8px_0px_0px_black]">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
               <h2 className="font-black uppercase flex items-center gap-3 text-xl tracking-tighter">
@@ -404,9 +473,9 @@ export default function AdminPage() {
                       <span className="text-[10px] font-black uppercase text-gray-500">{log.staff_name}</span>
                     </div>
                     <div className="flex items-center gap-2 text-[10px] font-black uppercase bg-white px-3 py-2 rounded-xl border-2 border-black">
-                      <span className="text-gray-400 truncate max-w-15">{log.previous_stage}</span>
+                      <span className="text-gray-400 truncate max-w-[60px]">{log.previous_stage}</span>
                       <ArrowRight size={12} className="text-black shrink-0" />
-                      <span className="text-blue-600 truncate max-w-15">{log.new_stage}</span>
+                      <span className="text-blue-600 truncate max-w-[60px]">{log.new_stage}</span>
                     </div>
                   </div>
                 ))
@@ -415,7 +484,7 @@ export default function AdminPage() {
           </div>
         </div>
       ) : (
-        // --- COMPLETIONS ARCHIVE VIEW (unchanged) ---
+        // --- COMPLETIONS ARCHIVE VIEW ---
         <div className="bg-white border-4 border-black rounded-[3rem] overflow-hidden shadow-[12px_12px_0px_0px_black] animate-in slide-in-from-bottom-4 duration-500">
           <div className="p-8 bg-gray-50 border-b-4 border-black flex flex-col sm:flex-row justify-between items-center gap-6">
             <div>

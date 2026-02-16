@@ -9,13 +9,13 @@ import {
   Loader2, Gem, Layers, List, ScanLine, Package, Printer, Camera, Keyboard, Clock
 } from 'lucide-react'
 
-// Updated stages to match new production flow
+// Stages and constants
 const STAGES = ['At Casting', 'Casted', 'Goldsmithing', 'Setting', 'Polishing', 'QC', 'Completed']
 const STAFF_MEMBERS = ['Goldsmith 1', 'Goldsmith 2', 'Setter 1', 'Setter 2', 'Polisher 1', 'QC']
 const REDO_REASONS = ['Loose Stone', 'Polishing Issue', 'Sizing Error', 'Metal Flaw', 'Other']
 const COOLDOWN_MS = 5 * 60 * 1000 // 5 minutes
 
-// --- Helper: format time (mm:ss or hh:mm:ss) ---
+// --- Helper: format time ---
 const formatTime = (totalSeconds) => {
   const hrs = Math.floor(totalSeconds / 3600)
   const mins = Math.floor((totalSeconds % 3600) / 60)
@@ -60,11 +60,12 @@ const printQRCode = (vtigerId, articleCode) => {
   printWindow.document.close()
 }
 
-// --- Custom Hook: useCameraScanner ---
+// --- Custom Hook: useCameraScanner (enhanced) ---
 function useCameraScanner(containerId) {
   const scannerRef = useRef(null)
   const [initialized, setInitialized] = useState(false)
   const [error, setError] = useState(null)
+  const [permissionDenied, setPermissionDenied] = useState(false)
   const onScanRef = useRef(null)
 
   const setOnScan = useCallback((callback) => {
@@ -72,10 +73,21 @@ function useCameraScanner(containerId) {
   }, [])
 
   const start = useCallback(async () => {
+    setError(null)
+    setPermissionDenied(false)
+
+    const container = document.getElementById(containerId)
+    if (!container) {
+      setError('Scanner container not found')
+      return
+    }
+
     if (!scannerRef.current) {
       scannerRef.current = new Html5Qrcode(containerId)
     }
+
     const config = { fps: 10, qrbox: { width: 250, height: 250 } }
+
     try {
       await scannerRef.current.start(
         { facingMode: 'environment' },
@@ -86,10 +98,14 @@ function useCameraScanner(containerId) {
         undefined
       )
       setInitialized(true)
-      setError(null)
     } catch (err) {
       console.error('Camera start error', err)
-      setError('Could not access camera. Please check permissions.')
+      if (err.name === 'NotAllowedError' || err.message?.includes('permission')) {
+        setPermissionDenied(true)
+        setError('Camera access denied. Please enable camera permissions.')
+      } else {
+        setError('Could not access camera. Please check permissions.')
+      }
       setInitialized(false)
     }
   }, [containerId])
@@ -104,6 +120,8 @@ function useCameraScanner(containerId) {
       }
       scannerRef.current = null
       setInitialized(false)
+      setError(null)
+      setPermissionDenied(false)
     }
   }, [])
 
@@ -116,9 +134,168 @@ function useCameraScanner(containerId) {
     }
   }, [])
 
-  return { initialized, error, start, stop, setOnScan }
+  return { initialized, error, permissionDenied, start, stop, setOnScan }
 }
 
+// --- Subcomponents ---
+
+// ScanMessage (global feedback)
+const ScanMessage = ({ message }) => {
+  if (!message) return null
+  return (
+    <div className={`mb-4 p-4 rounded-xl border-2 font-black text-sm text-center uppercase animate-in slide-in-from-top-2 ${
+      message.type === 'start'
+        ? 'bg-blue-100 border-blue-600 text-blue-800'
+        : message.type === 'success'
+        ? 'bg-green-100 border-green-600 text-green-800'
+        : 'bg-red-100 border-red-600 text-red-800'
+    }`}>
+      {message.text}
+    </div>
+  )
+}
+
+// ScannerModeToggle
+const ScannerModeToggle = ({ mode, onModeChange }) => (
+  <div className="flex gap-2 mb-4">
+    <button
+      onClick={() => onModeChange('manual')}
+      className={`flex-1 py-2 rounded-xl border-2 font-black text-xs flex items-center justify-center gap-1 ${
+        mode === 'manual' ? 'bg-black text-white border-black' : 'bg-white text-gray-400 border-gray-300'
+      }`}
+    >
+      <Keyboard size={14} /> MANUAL
+    </button>
+    <button
+      onClick={() => onModeChange('camera')}
+      className={`flex-1 py-2 rounded-xl border-2 font-black text-xs flex items-center justify-center gap-1 ${
+        mode === 'camera' ? 'bg-black text-white border-black' : 'bg-white text-gray-400 border-gray-300'
+      }`}
+    >
+      <Camera size={14} /> CAMERA
+    </button>
+  </div>
+)
+
+// ManualScanner
+const ManualScanner = ({ searchId, onSearchIdChange, onScan, loading, disabled }) => (
+  <>
+    <div className="flex gap-2 relative">
+      <input
+        autoFocus
+        type="text"
+        placeholder="SCAN JOB BARCODE..."
+        className="w-full p-6 border-4 border-black rounded-2xl font-black text-xl uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] outline-none focus:bg-blue-50 disabled:bg-gray-200 disabled:cursor-not-allowed"
+        value={searchId}
+        onChange={(e) => onSearchIdChange(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && onScan()}
+        disabled={disabled}
+      />
+      <button
+        onClick={onScan}
+        disabled={disabled}
+        className="bg-black text-white px-8 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {loading ? <Loader2 className="animate-spin" /> : <Search />}
+      </button>
+    </div>
+    <div className="text-center mt-8">
+      <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+        Scan 1x to Start Stage <br /> Scan 2x to Complete Stage
+      </p>
+    </div>
+  </>
+)
+
+// JobCard for list views
+const JobCard = ({ job, onClick, cooldownRemaining }) => (
+  <div
+    onClick={onClick}
+    className={`bg-white p-4 rounded-2xl border-2 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] cursor-pointer flex justify-between items-center group active:scale-95 transition-transform ${
+      job.is_rush ? 'border-red-500' : 'border-black'
+    }`}
+  >
+    <div>
+      <div className="flex items-center gap-2">
+        <p className="font-black text-xl group-hover:text-blue-600">{job.vtiger_id}</p>
+        {job.is_rush && <Flame size={16} className="text-red-500 fill-red-500" />}
+        {cooldownRemaining > 0 && (
+          <span className="flex items-center gap-1 text-[8px] font-black text-yellow-600 bg-yellow-50 px-1 py-0.5 rounded">
+            <Clock size={10} /> {cooldownRemaining}s
+          </span>
+        )}
+      </div>
+      <p className="text-[10px] text-blue-600 font-black uppercase flex items-center gap-1">
+        <Package size={10} /> {job.article_code || 'Stock'}
+      </p>
+    </div>
+    <div className="text-right">
+      <p className="text-[8px] font-black uppercase text-gray-400">{job.current_stage}</p>
+    </div>
+  </div>
+)
+
+// CameraScanner component (inline, not dynamically imported)
+const CameraScanner = ({ containerId, onScan, onStop }) => {
+  const { initialized, error, permissionDenied, start, stop, setOnScan } = useCameraScanner(containerId)
+
+  useEffect(() => {
+    setOnScan(onScan)
+  }, [setOnScan, onScan])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      start()
+    }, 100)
+    return () => {
+      clearTimeout(timer)
+      stop()
+    }
+  }, [start, stop])
+
+  return (
+    <div className="space-y-4">
+      <div
+        id={containerId}
+        className="w-full aspect-video bg-black rounded-2xl overflow-hidden border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
+      />
+      {error && (
+        <div className="p-4 bg-red-100 border-2 border-red-600 rounded-xl font-black text-xs text-red-800">
+          {error}
+          {permissionDenied && (
+            <button
+              onClick={() => {
+                stop()
+                start()
+              }}
+              className="ml-2 underline"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+      {!error && !initialized && (
+        <div className="text-center p-4 bg-yellow-100 border-2 border-yellow-600 rounded-xl font-black text-xs">
+          Initializing camera...
+        </div>
+      )}
+      {initialized && (
+        <div className="text-center text-[10px] font-black text-green-600">
+          Camera active – point at a QR code
+        </div>
+      )}
+      <button
+        onClick={onStop}
+        className="w-full bg-gray-200 p-3 rounded-xl font-black text-xs border-2 border-black"
+      >
+        STOP CAMERA
+      </button>
+    </div>
+  )
+}
+
+// --- Main component ---
 function WorkshopContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -131,44 +308,38 @@ function WorkshopContent() {
   const [showRejectMenu, setShowRejectMenu] = useState(false)
   const [activeJobs, setActiveJobs] = useState([])
   const [scanMessage, setScanMessage] = useState(null)
-  // Per-order cooldown state: { orderId: expiry timestamp }
-  const [orderCooldowns, setOrderCooldowns] = useState({})
-  const processingRef = useRef(false) // Prevent concurrent scans
+  const cooldownsRef = useRef({})
+  const [cooldownMarkers, setCooldownMarkers] = useState({})
+  const processingRef = useRef(false)
 
-  // Camera scanner state
   const [scanMode, setScanMode] = useState('manual')
   const scannerContainerId = 'qr-reader'
-  const { initialized: cameraInitialized, error: cameraError, start: startCamera, stop: stopCamera, setOnScan } = useCameraScanner(scannerContainerId)
 
-  // Helper to check if an order is in cooldown
   const isOrderInCooldown = useCallback((orderId) => {
-    const expiry = orderCooldowns[orderId]
+    const expiry = cooldownsRef.current[orderId]
     return expiry && Date.now() < expiry
-  }, [orderCooldowns])
-
-  // Clean up expired cooldowns every second
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setOrderCooldowns(prev => {
-        const now = Date.now()
-        const newCooldowns = {}
-        for (const [id, expiry] of Object.entries(prev)) {
-          if (expiry > now) newCooldowns[id] = expiry
-        }
-        return newCooldowns
-      })
-    }, 1000)
-    return () => clearInterval(interval)
   }, [])
 
-  // Auto‑clear scanMessage after 4 seconds
+  const setOrderCooldown = useCallback((orderId) => {
+    const expiry = Date.now() + COOLDOWN_MS
+    cooldownsRef.current[orderId] = expiry
+    setCooldownMarkers(prev => ({ ...prev, [orderId]: expiry }))
+    setTimeout(() => {
+      delete cooldownsRef.current[orderId]
+      setCooldownMarkers(prev => {
+        const next = { ...prev }
+        delete next[orderId]
+        return next
+      })
+    }, COOLDOWN_MS)
+  }, [])
+
   useEffect(() => {
     if (!scanMessage) return
     const timer = setTimeout(() => setScanMessage(null), 4000)
     return () => clearTimeout(timer)
   }, [scanMessage])
 
-  // --- Data fetching ---
   const fetchActiveJobs = useCallback(async () => {
     const { data } = await supabase
       .from('orders')
@@ -182,9 +353,13 @@ function WorkshopContent() {
     fetchActiveJobs()
   }, [fetchActiveJobs])
 
-  // --- Consolidated order stage update ---
   const updateOrderStage = useCallback(async ({ order, nextStage, action, redoReason = null, durationSeconds = 0 }) => {
     const now = new Date()
+    setActiveJobs(prev => 
+      prev.map(j => j.id === order.id ? { ...j, current_stage: nextStage } : j)
+        .filter(j => j.current_stage !== 'Completed')
+    )
+
     await supabase
       .from('orders')
       .update({
@@ -208,11 +383,8 @@ function WorkshopContent() {
     fetchActiveJobs()
   }, [staffName, fetchActiveJobs])
 
-  // --- Process scanned/typed ID ---
   const processOrderId = useCallback(async (cleanId) => {
     if (!cleanId) return
-
-    // Prevent concurrent processing
     if (processingRef.current) return
     processingRef.current = true
     setLoading(true)
@@ -230,9 +402,8 @@ function WorkshopContent() {
         return
       }
 
-      // Check per-order cooldown
       if (isOrderInCooldown(order.id)) {
-        const expiry = orderCooldowns[order.id]
+        const expiry = cooldownsRef.current[order.id]
         const remaining = Math.ceil((expiry - Date.now()) / 1000)
         setScanMessage({ type: 'error', text: `Order ${cleanId} is in cooldown (${remaining}s remaining)` })
         return
@@ -241,7 +412,6 @@ function WorkshopContent() {
       const now = new Date()
 
       if (!order.timer_started_at) {
-        // START
         await supabase
           .from('orders')
           .update({ timer_started_at: now.toISOString() })
@@ -259,10 +429,8 @@ function WorkshopContent() {
           text: `▶️ STARTED: ${order.vtiger_id} at ${order.current_stage}`
         })
       } else {
-        // COMPLETE
         const start = new Date(order.timer_started_at)
         const durationSeconds = Math.floor((now - start) / 1000) + (order.timer_accumulated || 0)
-
         const currentIndex = STAGES.indexOf(order.current_stage)
         const nextStage = STAGES[currentIndex + 1] || 'Completed'
 
@@ -279,11 +447,7 @@ function WorkshopContent() {
         })
       }
 
-      // Set per-order cooldown after successful scan
-      setOrderCooldowns(prev => ({
-        ...prev,
-        [order.id]: Date.now() + COOLDOWN_MS
-      }))
+      setOrderCooldown(order.id)
       setSearchId('')
     } catch (err) {
       console.error(err)
@@ -292,28 +456,17 @@ function WorkshopContent() {
       setLoading(false)
       processingRef.current = false
     }
-  }, [staffName, isOrderInCooldown, orderCooldowns, updateOrderStage])
+  }, [staffName, isOrderInCooldown, updateOrderStage, setOrderCooldown])
 
-  // --- Stable scan handler for camera ---
-  const handleDecodedText = useCallback((decodedText) => {
-    processOrderId(decodedText.trim().toUpperCase())
-    if (navigator.vibrate) navigator.vibrate(200)
+  const processOrderIdRef = useRef(processOrderId)
+  useEffect(() => {
+    processOrderIdRef.current = processOrderId
   }, [processOrderId])
 
-  // Set the scan callback for the camera
-  useEffect(() => {
-    setOnScan(handleDecodedText)
-  }, [setOnScan, handleDecodedText])
-
-  // Start/stop camera based on mode and tab only
-  useEffect(() => {
-    const shouldRunCamera = activeTab === 'scanner' && scanMode === 'camera'
-    if (shouldRunCamera && !cameraInitialized) {
-      startCamera()
-    } else if (!shouldRunCamera && cameraInitialized) {
-      stopCamera()
-    }
-  }, [activeTab, scanMode, cameraInitialized, startCamera, stopCamera])
+  const handleDecodedText = useCallback((decodedText) => {
+    processOrderIdRef.current(decodedText.trim().toUpperCase())
+    if (navigator.vibrate) navigator.vibrate(200)
+  }, [])
 
   const handleScan = () => {
     processOrderId(searchId.toUpperCase().trim())
@@ -346,17 +499,12 @@ function WorkshopContent() {
       durationSeconds
     })
 
-    // Set per-order cooldown after manual move
-    setOrderCooldowns(prev => ({
-      ...prev,
-      [activeOrder.id]: Date.now() + COOLDOWN_MS
-    }))
-
+    setOrderCooldown(activeOrder.id)
     setActiveOrder(null)
     setShowRejectMenu(false)
     setScanMessage({ type: 'success', text: `✅ Moved to ${nextStage}` })
     setLoading(false)
-  }, [activeOrder, updateOrderStage])
+  }, [activeOrder, updateOrderStage, setOrderCooldown])
 
   const toggleStone = useCallback(async (field, currentValue) => {
     if (!activeOrder) return
@@ -365,48 +513,35 @@ function WorkshopContent() {
     await supabase.from('orders').update({ [field]: newValue }).eq('id', activeOrder.id)
   }, [activeOrder])
 
-  const closeOrder = useCallback(() => {
+  const closeOrder = () => {
     setActiveOrder(null)
     setShowRejectMenu(false)
-  }, [])
+  }
 
-  const handlePrintQR = useCallback(() => {
+  const handlePrintQR = () => {
     if (activeOrder) printQRCode(activeOrder.vtiger_id, activeOrder.article_code)
-  }, [activeOrder])
+  }
 
-  const getJobCurrentTime = useCallback((job) => {
-    let acc = job.timer_accumulated || 0
-    if (job.timer_started_at) {
-      const start = new Date(job.timer_started_at)
-      acc += (Date.now() - start.getTime()) / 1000
-    }
-    return acc
-  }, [])
+  const rushJobs = useMemo(() => activeJobs.filter(j => j.is_rush), [activeJobs])
 
-  const getCooldownRemainingForJob = useCallback((jobId) => {
-    const expiry = orderCooldowns[jobId]
+  const cooldownRemainingForJob = useCallback((jobId) => {
+    const expiry = cooldownsRef.current[jobId]
     if (!expiry) return 0
     const remaining = Math.ceil((expiry - Date.now()) / 1000)
     return remaining > 0 ? remaining : 0
-  }, [orderCooldowns])
+  }, [])
 
-  // Memoize filtered list
-  const rushJobs = useMemo(() => activeJobs.filter(j => j.is_rush), [activeJobs])
+  const cooldownMap = useMemo(() => {
+    const map = {}
+    activeJobs.forEach(job => {
+      map[job.id] = cooldownRemainingForJob(job.id)
+    })
+    return map
+  }, [activeJobs, cooldownRemainingForJob])
 
   return (
     <div className="max-w-2xl mx-auto p-4 bg-gray-50 min-h-screen pb-20">
-      {/* Global message display */}
-      {scanMessage && (
-        <div className={`mb-4 p-4 rounded-xl border-2 font-black text-sm text-center uppercase animate-in slide-in-from-top-2 ${
-          scanMessage.type === 'start'
-            ? 'bg-blue-100 border-blue-600 text-blue-800'
-            : scanMessage.type === 'success'
-            ? 'bg-green-100 border-green-600 text-green-800'
-            : 'bg-red-100 border-red-600 text-red-800'
-        }`}>
-          {scanMessage.text}
-        </div>
-      )}
+      <ScanMessage message={scanMessage} />
 
       <div className="flex bg-black p-1 rounded-xl mb-6 shadow-xl gap-1">
         <button
@@ -452,90 +587,24 @@ function WorkshopContent() {
         <div className="animate-in fade-in duration-500">
           {activeTab === 'scanner' && (
             <div className="space-y-4">
-              {/* Mode toggle */}
-              <div className="flex gap-2 mb-4">
-                <button
-                  onClick={() => setScanMode('manual')}
-                  className={`flex-1 py-2 rounded-xl border-2 font-black text-xs flex items-center justify-center gap-1 ${
-                    scanMode === 'manual'
-                      ? 'bg-black text-white border-black'
-                      : 'bg-white text-gray-400 border-gray-300'
-                  }`}
-                >
-                  <Keyboard size={14} /> MANUAL
-                </button>
-                <button
-                  onClick={() => setScanMode('camera')}
-                  className={`flex-1 py-2 rounded-xl border-2 font-black text-xs flex items-center justify-center gap-1 ${
-                    scanMode === 'camera'
-                      ? 'bg-black text-white border-black'
-                      : 'bg-white text-gray-400 border-gray-300'
-                  }`}
-                >
-                  <Camera size={14} /> CAMERA
-                </button>
-              </div>
+              <ScannerModeToggle mode={scanMode} onModeChange={setScanMode} />
 
               {scanMode === 'manual' && (
-                <>
-                  <div className="flex gap-2 relative">
-                    <input
-                      autoFocus
-                      type="text"
-                      placeholder="SCAN JOB BARCODE..."
-                      className="w-full p-6 border-4 border-black rounded-2xl font-black text-xl uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] outline-none focus:bg-blue-50 disabled:bg-gray-200 disabled:cursor-not-allowed"
-                      value={searchId}
-                      onChange={(e) => setSearchId(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleScan()}
-                      disabled={loading}
-                    />
-                    <button
-                      onClick={handleScan}
-                      disabled={loading}
-                      className="bg-black text-white px-8 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {loading ? <Loader2 className="animate-spin" /> : <Search />}
-                    </button>
-                  </div>
-                  <div className="text-center mt-8">
-                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
-                      Scan 1x to Start Stage <br /> Scan 2x to Complete Stage
-                    </p>
-                  </div>
-                </>
+                <ManualScanner
+                  searchId={searchId}
+                  onSearchIdChange={setSearchId}
+                  onScan={handleScan}
+                  loading={loading}
+                  disabled={loading}
+                />
               )}
 
               {scanMode === 'camera' && (
-                <div className="space-y-4">
-                  <div
-                    id={scannerContainerId}
-                    className="w-full aspect-video bg-black rounded-2xl overflow-hidden border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-                  />
-                  {cameraError && (
-                    <div className="p-4 bg-red-100 border-2 border-red-600 rounded-xl font-black text-xs text-red-800">
-                      {cameraError}
-                    </div>
-                  )}
-                  {!cameraError && !cameraInitialized && (
-                    <div className="text-center p-4 bg-yellow-100 border-2 border-yellow-600 rounded-xl font-black text-xs">
-                      Initializing camera...
-                    </div>
-                  )}
-                  {cameraInitialized && (
-                    <div className="text-center text-[10px] font-black text-green-600">
-                      Camera active – point at a QR code
-                    </div>
-                  )}
-                  <button
-                    onClick={() => {
-                      stopCamera()
-                      setScanMode('manual')
-                    }}
-                    className="w-full bg-gray-200 p-3 rounded-xl font-black text-xs border-2 border-black"
-                  >
-                    STOP CAMERA
-                  </button>
-                </div>
+                <CameraScanner
+                  containerId={scannerContainerId}
+                  onScan={handleDecodedText}
+                  onStop={() => setScanMode('manual')}
+                />
               )}
             </div>
           )}
@@ -547,38 +616,14 @@ function WorkshopContent() {
                   No jobs found in this view.
                 </div>
               )}
-              {(activeTab === 'rush' ? rushJobs : activeJobs).map(job => {
-                const currentTime = getJobCurrentTime(job)
-                const cooldownRemaining = getCooldownRemainingForJob(job.id)
-                return (
-                  <div
-                    key={job.id}
-                    onClick={() => setActiveOrder(job)}
-                    className={`bg-white p-4 rounded-2xl border-2 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] cursor-pointer flex justify-between items-center group active:scale-95 transition-transform ${
-                      job.is_rush ? 'border-red-500' : 'border-black'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p className="font-black text-xl group-hover:text-blue-600">{job.vtiger_id}</p>
-                        {job.is_rush && <Flame size={16} className="text-red-500 fill-red-500" />}
-                        {cooldownRemaining > 0 && (
-                          <span className="flex items-center gap-1 text-[8px] font-black text-yellow-600 bg-yellow-50 px-1 py-0.5 rounded">
-                            <Clock size={10} /> {cooldownRemaining}s
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[10px] text-blue-600 font-black uppercase flex items-center gap-1">
-                        <Package size={10} /> {job.article_code || 'Stock'}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[8px] font-black uppercase text-gray-400">{job.current_stage}</p>
-                      {/* Timer display removed as requested */}
-                    </div>
-                  </div>
-                )
-              })}
+              {(activeTab === 'rush' ? rushJobs : activeJobs).map(job => (
+                <JobCard
+                  key={job.id}
+                  job={job}
+                  onClick={() => setActiveOrder(job)}
+                  cooldownRemaining={cooldownMap[job.id]}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -589,9 +634,9 @@ function WorkshopContent() {
               <div className="flex items-center gap-2">
                 <h2 className="text-5xl font-black tracking-tighter leading-none">{activeOrder.vtiger_id}</h2>
                 {activeOrder.is_rush && <Flame size={24} className="text-red-500 fill-red-500" />}
-                {getCooldownRemainingForJob(activeOrder.id) > 0 && (
+                {cooldownRemainingForJob(activeOrder.id) > 0 && (
                   <span className="flex items-center gap-1 text-[10px] font-black text-yellow-600 bg-yellow-50 px-2 py-1 rounded">
-                    <Clock size={14} /> {getCooldownRemainingForJob(activeOrder.id)}s cooldown
+                    <Clock size={14} /> {cooldownRemainingForJob(activeOrder.id)}s cooldown
                   </span>
                 )}
               </div>
