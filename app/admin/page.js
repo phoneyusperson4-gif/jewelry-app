@@ -68,7 +68,8 @@ const TimeBreakdown = ({ order }) => {
     const logTime = new Date(log.created_at).getTime()
     const stageSeconds = log.duration_seconds || 0
     const stageStart = logTime - stageSeconds * 1000
-    const stageName = (log.previous_stage || 'Unknown').trim()
+    // Use previous_stage if available, otherwise fallback to new_stage
+    const stageName = (log.previous_stage || log.new_stage || 'Unknown').trim()
 
     // Waiting before this stage (if any)
     const waitSeconds = Math.max(0, Math.floor((stageStart - prevEnd) / 1000))
@@ -82,16 +83,18 @@ const TimeBreakdown = ({ order }) => {
       })
     }
 
-    // The stage itself
-    timeline.push({
-      type: 'stage',
-      name: stageName,
-      seconds: stageSeconds,
-      staff: log.staff_name,
-      isRedo: log.action === 'REJECTED',
-      from: new Date(stageStart),
-      to: new Date(logTime)
-    })
+    // The stage itself (skip if zero duration to avoid clutter)
+    if (stageSeconds > 0) {
+      timeline.push({
+        type: 'stage',
+        name: stageName,
+        seconds: stageSeconds,
+        staff: log.staff_name,
+        isRedo: log.action === 'REJECTED',
+        from: new Date(stageStart),
+        to: new Date(logTime)
+      })
+    }
 
     prevEnd = logTime
   })
@@ -112,9 +115,9 @@ const TimeBreakdown = ({ order }) => {
   const activeSeconds = timeline.filter(t => t.type === 'stage').reduce((acc, t) => acc + t.seconds, 0)
   const waitingSeconds = timeline.filter(t => t.type === 'wait').reduce((acc, t) => acc + t.seconds, 0)
 
-  // Stage totals (dynamically from logs, trimmed)
+  // Stage totals (dynamically from logs, trimmed, using same fallback)
   const summary = logs.reduce((acc, log) => {
-    const stage = (log.previous_stage || 'Unknown').trim()
+    const stage = (log.previous_stage || log.new_stage || 'Unknown').trim()
     acc[stage] = (acc[stage] || 0) + (log.duration_seconds || 0)
     return acc
   }, {})
