@@ -430,7 +430,12 @@ function WorkshopContent() {
         })
       } else {
         const start = new Date(order.timer_started_at)
+        // Added detailed logging for debugging
+        console.log('Start time:', start.toISOString(), 'Now:', now.toISOString())
+        console.log('Time diff ms:', now - start)
         const durationSeconds = Math.floor((now - start) / 1000) + (order.timer_accumulated || 0)
+        console.log('durationSeconds:', durationSeconds)
+
         const currentIndex = STAGES.indexOf(order.current_stage)
         const nextStage = STAGES[currentIndex + 1] || 'Completed'
 

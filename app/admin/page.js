@@ -6,7 +6,7 @@ import {
   Search, PlayCircle, Archive, X, RotateCcw
 } from 'lucide-react'
 
-// Simple debounce utility (no external dependency)
+// Simple debounce utility
 function debounce(func, wait) {
   let timeout
   return function executedFunction(...args) {
@@ -68,6 +68,7 @@ const TimeBreakdown = ({ order }) => {
     const logTime = new Date(log.created_at).getTime()
     const stageSeconds = log.duration_seconds || 0
     const stageStart = logTime - stageSeconds * 1000
+    const stageName = (log.previous_stage || 'Unknown').trim()
 
     // Waiting before this stage (if any)
     const waitSeconds = Math.max(0, Math.floor((stageStart - prevEnd) / 1000))
@@ -84,7 +85,7 @@ const TimeBreakdown = ({ order }) => {
     // The stage itself
     timeline.push({
       type: 'stage',
-      name: log.previous_stage || 'Unknown',
+      name: stageName,
       seconds: stageSeconds,
       staff: log.staff_name,
       isRedo: log.action === 'REJECTED',
@@ -111,12 +112,15 @@ const TimeBreakdown = ({ order }) => {
   const activeSeconds = timeline.filter(t => t.type === 'stage').reduce((acc, t) => acc + t.seconds, 0)
   const waitingSeconds = timeline.filter(t => t.type === 'wait').reduce((acc, t) => acc + t.seconds, 0)
 
-  // Stage totals (for the small cards)
+  // Stage totals (dynamically from logs, trimmed)
   const summary = logs.reduce((acc, log) => {
-    const stage = log.previous_stage || 'Unknown'
+    const stage = (log.previous_stage || 'Unknown').trim()
     acc[stage] = (acc[stage] || 0) + (log.duration_seconds || 0)
     return acc
   }, {})
+
+  // Get all stages that have time (for display)
+  const stageList = Object.keys(summary).filter(stage => summary[stage] > 0)
 
   return (
     <div className="mt-6 space-y-6">
@@ -136,12 +140,12 @@ const TimeBreakdown = ({ order }) => {
         </div>
       </div>
 
-      {/* Stage totals */}
+      {/* Stage totals – dynamically show all stages that have time */}
       <div className="grid grid-cols-3 gap-2">
-        {['Goldsmithing', 'Setting', 'Polishing'].map(s => (
-          <div key={s} className="bg-gray-50 border-2 border-black p-2 rounded-xl text-center">
-            <p className="text-[8px] font-black uppercase text-gray-400">{s}</p>
-            <p className="text-xs font-black">{formatDuration(summary[s] || 0)}</p>
+        {stageList.map(stage => (
+          <div key={stage} className="bg-gray-50 border-2 border-black p-2 rounded-xl text-center">
+            <p className="text-[8px] font-black uppercase text-gray-400">{stage}</p>
+            <p className="text-xs font-black">{formatDuration(summary[stage])}</p>
           </div>
         ))}
       </div>
