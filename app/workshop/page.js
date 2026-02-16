@@ -6,12 +6,13 @@ import { QRCodeCanvas } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
 import {
   Search, User, X, CheckCircle, Flame,
-  Loader2, Gem, Layers, List, ScanLine, Package, Printer, Camera, Keyboard
+  Loader2, Gem, Layers, List, ScanLine, Package, Printer, Camera, Keyboard, Clock
 } from 'lucide-react'
 
 const STAGES = ['At Casting', 'Goldsmithing', 'Setting', 'Polishing', 'QC', 'Completed']
 const STAFF_MEMBERS = ['Goldsmith 1', 'Goldsmith 2', 'Setter 1', 'Setter 2', 'Polisher 1', 'QC']
 const REDO_REASONS = ['Loose Stone', 'Polishing Issue', 'Sizing Error', 'Metal Flaw', 'Other']
+const COOLDOWN_MS = 5 * 60 * 1000 // 5 minutes
 
 // --- Helper: format time (mm:ss or hh:mm:ss) ---
 const formatTime = (totalSeconds) => {
@@ -123,6 +124,8 @@ function WorkshopContent() {
   const [showRejectMenu, setShowRejectMenu] = useState(false)
   const [activeJobs, setActiveJobs] = useState([])
   const [scanMessage, setScanMessage] = useState(null)
+  // Cooldown state
+  const [cooldownUntil, setCooldownUntil] = useState(null)
 
   // Camera scanner state
   const [scanMode, setScanMode] = useState('manual')
@@ -136,13 +139,31 @@ function WorkshopContent() {
     return () => clearTimeout(timer)
   }, [scanMessage])
 
+  // Cooldown timer: update remaining every second and auto‑clear when reached
+  const [cooldownRemaining, setCooldownRemaining] = useState(0)
+  useEffect(() => {
+    if (!cooldownUntil) {
+      setCooldownRemaining(0)
+      return
+    }
+    const interval = setInterval(() => {
+      const remaining = Math.max(0, Math.floor((cooldownUntil - Date.now()) / 1000))
+      setCooldownRemaining(remaining)
+      if (remaining === 0) {
+        setCooldownUntil(null)
+      }
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [cooldownUntil])
+
   useEffect(() => {
     fetchActiveJobs()
   }, [])
 
-  // Start/stop camera based on mode and tab
+  // Start/stop camera based on mode, tab, and cooldown
   useEffect(() => {
-    if (activeTab === 'scanner' && scanMode === 'camera') {
+    const shouldRunCamera = activeTab === 'scanner' && scanMode === 'camera' && cooldownRemaining === 0
+    if (shouldRunCamera) {
       startCamera((decodedText) => {
         processOrderId(decodedText.trim().toUpperCase())
         if (navigator.vibrate) navigator.vibrate(200)
@@ -150,7 +171,7 @@ function WorkshopContent() {
     } else {
       stopCamera()
     }
-  }, [activeTab, scanMode, startCamera, stopCamera])
+  }, [activeTab, scanMode, cooldownRemaining, startCamera, stopCamera])
 
   const fetchActiveJobs = async () => {
     const { data } = await supabase
@@ -190,6 +211,10 @@ function WorkshopContent() {
   // --- Process scanned/typed ID ---
   const processOrderId = async (cleanId) => {
     if (!cleanId) return
+    if (cooldownRemaining > 0) {
+      setScanMessage({ type: 'error', text: `Please wait ${cooldownRemaining}s before next scan` })
+      return
+    }
     setLoading(true)
 
     const { data: order, error } = await supabase
@@ -245,6 +270,9 @@ function WorkshopContent() {
         text: `✅ COMPLETED: ${order.vtiger_id}. Moved to ${nextStage}`
       })
     }
+
+    // Set cooldown after successful scan
+    setCooldownUntil(Date.now() + COOLDOWN_MS)
 
     setSearchId('')
     setLoading(false)
@@ -330,6 +358,14 @@ function WorkshopContent() {
         </div>
       )}
 
+      {/* Cooldown indicator */}
+      {cooldownRemaining > 0 && (
+        <div className="mb-4 p-3 bg-yellow-100 border-2 border-yellow-600 rounded-xl font-black text-xs text-yellow-800 flex items-center justify-center gap-2">
+          <Clock size={16} className="animate-pulse" />
+          COOLDOWN: {formatTime(cooldownRemaining)} until next scan
+        </div>
+      )}
+
       <div className="flex bg-black p-1 rounded-xl mb-6 shadow-xl gap-1">
         <button
           onClick={() => { setActiveTab('scanner'); closeOrder(); }}
@@ -383,6 +419,7 @@ function WorkshopContent() {
                       ? 'bg-black text-white border-black'
                       : 'bg-white text-gray-400 border-gray-300'
                   }`}
+                  disabled={cooldownRemaining > 0} // optional: disable toggle during cooldown
                 >
                   <Keyboard size={14} /> MANUAL
                 </button>
@@ -393,6 +430,7 @@ function WorkshopContent() {
                       ? 'bg-black text-white border-black'
                       : 'bg-white text-gray-400 border-gray-300'
                   }`}
+                  disabled={cooldownRemaining > 0}
                 >
                   <Camera size={14} /> CAMERA
                 </button>
@@ -405,15 +443,16 @@ function WorkshopContent() {
                       autoFocus
                       type="text"
                       placeholder="SCAN JOB BARCODE..."
-                      className="w-full p-6 border-4 border-black rounded-2xl font-black text-xl uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] outline-none focus:bg-blue-50"
+                      className="w-full p-6 border-4 border-black rounded-2xl font-black text-xl uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] outline-none focus:bg-blue-50 disabled:bg-gray-200 disabled:cursor-not-allowed"
                       value={searchId}
                       onChange={(e) => setSearchId(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleScan()}
+                      disabled={cooldownRemaining > 0 || loading}
                     />
                     <button
                       onClick={handleScan}
-                      disabled={loading}
-                      className="bg-black text-white px-8 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1 transition-all"
+                      disabled={cooldownRemaining > 0 || loading}
+                      className="bg-black text-white px-8 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {loading ? <Loader2 className="animate-spin" /> : <Search />}
                     </button>
@@ -437,14 +476,19 @@ function WorkshopContent() {
                       {cameraError}
                     </div>
                   )}
-                  {!cameraError && !cameraInitialized && (
+                  {!cameraError && !cameraInitialized && cooldownRemaining === 0 && (
                     <div className="text-center p-4 bg-yellow-100 border-2 border-yellow-600 rounded-xl font-black text-xs">
                       Initializing camera...
                     </div>
                   )}
-                  {cameraInitialized && (
+                  {cameraInitialized && cooldownRemaining === 0 && (
                     <div className="text-center text-[10px] font-black text-green-600">
                       Camera active – point at a QR code
+                    </div>
+                  )}
+                  {cooldownRemaining > 0 && (
+                    <div className="text-center p-4 bg-yellow-100 border-2 border-yellow-600 rounded-xl font-black text-xs">
+                      Camera paused – cooldown active
                     </div>
                   )}
                   <button
@@ -453,6 +497,7 @@ function WorkshopContent() {
                       setScanMode('manual')
                     }}
                     className="w-full bg-gray-200 p-3 rounded-xl font-black text-xs border-2 border-black"
+                    disabled={cooldownRemaining > 0}
                   >
                     STOP CAMERA
                   </button>
