@@ -161,16 +161,6 @@ function WorkshopContent() {
     return () => clearInterval(interval)
   }, [])
 
-  // Stable scan handler
-  const handleDecodedText = useCallback((decodedText) => {
-    processOrderId(decodedText.trim().toUpperCase())
-    if (navigator.vibrate) navigator.vibrate(200)
-  }, [])
-
-  useEffect(() => {
-    setOnScan(handleDecodedText)
-  }, [setOnScan, handleDecodedText])
-
   // Auto‑clear scanMessage after 4 seconds
   useEffect(() => {
     if (!scanMessage) return
@@ -178,28 +168,19 @@ function WorkshopContent() {
     return () => clearTimeout(timer)
   }, [scanMessage])
 
-  useEffect(() => {
-    fetchActiveJobs()
-  }, [])
-
-  // Start/stop camera based on mode and tab only (no cooldown dependency)
-  useEffect(() => {
-    const shouldRunCamera = activeTab === 'scanner' && scanMode === 'camera'
-    if (shouldRunCamera && !cameraInitialized) {
-      startCamera()
-    } else if (!shouldRunCamera && cameraInitialized) {
-      stopCamera()
-    }
-  }, [activeTab, scanMode, cameraInitialized, startCamera, stopCamera])
-
-  const fetchActiveJobs = async () => {
+  // --- Data fetching ---
+  const fetchActiveJobs = useCallback(async () => {
     const { data } = await supabase
       .from('orders')
       .select('*')
       .neq('current_stage', 'Completed')
       .order('created_at', { ascending: false })
     if (data) setActiveJobs(data)
-  }
+  }, [])
+
+  useEffect(() => {
+    fetchActiveJobs()
+  }, [fetchActiveJobs])
 
   // --- Consolidated order stage update ---
   const updateOrderStage = useCallback(async ({ order, nextStage, action, redoReason = null, durationSeconds = 0 }) => {
@@ -225,10 +206,10 @@ function WorkshopContent() {
     }])
 
     fetchActiveJobs()
-  }, [staffName])
+  }, [staffName, fetchActiveJobs])
 
   // --- Process scanned/typed ID ---
-  const processOrderId = async (cleanId) => {
+  const processOrderId = useCallback(async (cleanId) => {
     if (!cleanId) return
 
     // Prevent concurrent processing
@@ -311,13 +292,34 @@ function WorkshopContent() {
       setLoading(false)
       processingRef.current = false
     }
-  }
+  }, [staffName, isOrderInCooldown, orderCooldowns, updateOrderStage])
+
+  // --- Stable scan handler for camera ---
+  const handleDecodedText = useCallback((decodedText) => {
+    processOrderId(decodedText.trim().toUpperCase())
+    if (navigator.vibrate) navigator.vibrate(200)
+  }, [processOrderId])
+
+  // Set the scan callback for the camera
+  useEffect(() => {
+    setOnScan(handleDecodedText)
+  }, [setOnScan, handleDecodedText])
+
+  // Start/stop camera based on mode and tab only
+  useEffect(() => {
+    const shouldRunCamera = activeTab === 'scanner' && scanMode === 'camera'
+    if (shouldRunCamera && !cameraInitialized) {
+      startCamera()
+    } else if (!shouldRunCamera && cameraInitialized) {
+      stopCamera()
+    }
+  }, [activeTab, scanMode, cameraInitialized, startCamera, stopCamera])
 
   const handleScan = () => {
     processOrderId(searchId.toUpperCase().trim())
   }
 
-  const handleManualMove = async (isRejection = false, reason = null) => {
+  const handleManualMove = useCallback(async (isRejection = false, reason = null) => {
     if (!activeOrder) return
     setLoading(true)
 
@@ -354,39 +356,39 @@ function WorkshopContent() {
     setShowRejectMenu(false)
     setScanMessage({ type: 'success', text: `✅ Moved to ${nextStage}` })
     setLoading(false)
-  }
+  }, [activeOrder, updateOrderStage])
 
-  const toggleStone = async (field, currentValue) => {
+  const toggleStone = useCallback(async (field, currentValue) => {
     if (!activeOrder) return
     const newValue = !currentValue
     setActiveOrder({ ...activeOrder, [field]: newValue })
     await supabase.from('orders').update({ [field]: newValue }).eq('id', activeOrder.id)
-  }
+  }, [activeOrder])
 
-  const closeOrder = () => {
+  const closeOrder = useCallback(() => {
     setActiveOrder(null)
     setShowRejectMenu(false)
-  }
+  }, [])
 
-  const handlePrintQR = () => {
+  const handlePrintQR = useCallback(() => {
     if (activeOrder) printQRCode(activeOrder.vtiger_id, activeOrder.article_code)
-  }
+  }, [activeOrder])
 
-  const getJobCurrentTime = (job) => {
+  const getJobCurrentTime = useCallback((job) => {
     let acc = job.timer_accumulated || 0
     if (job.timer_started_at) {
       const start = new Date(job.timer_started_at)
       acc += (Date.now() - start.getTime()) / 1000
     }
     return acc
-  }
+  }, [])
 
-  const getCooldownRemainingForJob = (jobId) => {
+  const getCooldownRemainingForJob = useCallback((jobId) => {
     const expiry = orderCooldowns[jobId]
     if (!expiry) return 0
     const remaining = Math.ceil((expiry - Date.now()) / 1000)
     return remaining > 0 ? remaining : 0
-  }
+  }, [orderCooldowns])
 
   // Memoize filtered list
   const rushJobs = useMemo(() => activeJobs.filter(j => j.is_rush), [activeJobs])
@@ -572,9 +574,7 @@ function WorkshopContent() {
                     </div>
                     <div className="text-right">
                       <p className="text-[8px] font-black uppercase text-gray-400">{job.current_stage}</p>
-                      {currentTime > 0 && (
-                        <p className="text-[10px] font-bold text-gray-500">{formatTime(currentTime)}</p>
-                      )}
+                      {/* Timer display removed as requested */}
                     </div>
                   </div>
                 )
