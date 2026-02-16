@@ -59,14 +59,13 @@ const printQRCode = (vtigerId, articleCode) => {
   printWindow.document.close()
 }
 
-// --- Custom Hook: useCameraScanner (fixed) ---
+// --- Custom Hook: useCameraScanner ---
 function useCameraScanner(containerId) {
   const scannerRef = useRef(null)
   const [initialized, setInitialized] = useState(false)
   const [error, setError] = useState(null)
   const onScanRef = useRef(null)
 
-  // Set the callback that will be used on each scan
   const setOnScan = useCallback((callback) => {
     onScanRef.current = callback
   }, [])
@@ -107,7 +106,6 @@ function useCameraScanner(containerId) {
     }
   }, [])
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (scannerRef.current) {
@@ -132,8 +130,8 @@ function WorkshopContent() {
   const [showRejectMenu, setShowRejectMenu] = useState(false)
   const [activeJobs, setActiveJobs] = useState([])
   const [scanMessage, setScanMessage] = useState(null)
-  // Cooldown state
-  const [cooldownUntil, setCooldownUntil] = useState(null)
+  // Per-order cooldown state: { orderId: expiry timestamp }
+  const [orderCooldowns, setOrderCooldowns] = useState({})
   const processingRef = useRef(false) // Prevent concurrent scans
 
   // Camera scanner state
@@ -141,13 +139,33 @@ function WorkshopContent() {
   const scannerContainerId = 'qr-reader'
   const { initialized: cameraInitialized, error: cameraError, start: startCamera, stop: stopCamera, setOnScan } = useCameraScanner(scannerContainerId)
 
+  // Helper to check if an order is in cooldown
+  const isOrderInCooldown = useCallback((orderId) => {
+    const expiry = orderCooldowns[orderId]
+    return expiry && Date.now() < expiry
+  }, [orderCooldowns])
+
+  // Clean up expired cooldowns every second
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setOrderCooldowns(prev => {
+        const now = Date.now()
+        const newCooldowns = {}
+        for (const [id, expiry] of Object.entries(prev)) {
+          if (expiry > now) newCooldowns[id] = expiry
+        }
+        return newCooldowns
+      })
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [])
+
   // Stable scan handler
   const handleDecodedText = useCallback((decodedText) => {
     processOrderId(decodedText.trim().toUpperCase())
     if (navigator.vibrate) navigator.vibrate(200)
   }, [])
 
-  // Set the scan callback once when the component mounts or handleDecodedText changes
   useEffect(() => {
     setOnScan(handleDecodedText)
   }, [setOnScan, handleDecodedText])
@@ -159,36 +177,19 @@ function WorkshopContent() {
     return () => clearTimeout(timer)
   }, [scanMessage])
 
-  // Cooldown timer: update remaining every second and auto‑clear when reached
-  const [cooldownRemaining, setCooldownRemaining] = useState(0)
-  useEffect(() => {
-    if (!cooldownUntil) {
-      setCooldownRemaining(0)
-      return
-    }
-    const interval = setInterval(() => {
-      const remaining = Math.max(0, Math.floor((cooldownUntil - Date.now()) / 1000))
-      setCooldownRemaining(remaining)
-      if (remaining === 0) {
-        setCooldownUntil(null)
-      }
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [cooldownUntil])
-
   useEffect(() => {
     fetchActiveJobs()
   }, [])
 
-  // Start/stop camera based on mode, tab, and cooldown
+  // Start/stop camera based on mode and tab only (no cooldown dependency)
   useEffect(() => {
-    const shouldRunCamera = activeTab === 'scanner' && scanMode === 'camera' && cooldownRemaining === 0
+    const shouldRunCamera = activeTab === 'scanner' && scanMode === 'camera'
     if (shouldRunCamera && !cameraInitialized) {
       startCamera()
     } else if (!shouldRunCamera && cameraInitialized) {
       stopCamera()
     }
-  }, [activeTab, scanMode, cooldownRemaining, cameraInitialized, startCamera, stopCamera])
+  }, [activeTab, scanMode, cameraInitialized, startCamera, stopCamera])
 
   const fetchActiveJobs = async () => {
     const { data } = await supabase
@@ -229,13 +230,6 @@ function WorkshopContent() {
   const processOrderId = async (cleanId) => {
     if (!cleanId) return
 
-    // Immediate cooldown check using cooldownUntil
-    if (cooldownUntil && Date.now() < cooldownUntil) {
-      const remaining = Math.ceil((cooldownUntil - Date.now()) / 1000)
-      setScanMessage({ type: 'error', text: `Please wait ${remaining}s before next scan` })
-      return
-    }
-
     // Prevent concurrent processing
     if (processingRef.current) return
     processingRef.current = true
@@ -251,6 +245,14 @@ function WorkshopContent() {
       if (!order || error) {
         setScanMessage({ type: 'error', text: `Order ${cleanId} not found!` })
         setSearchId('')
+        return
+      }
+
+      // Check per-order cooldown
+      if (isOrderInCooldown(order.id)) {
+        const expiry = orderCooldowns[order.id]
+        const remaining = Math.ceil((expiry - Date.now()) / 1000)
+        setScanMessage({ type: 'error', text: `Order ${cleanId} is in cooldown (${remaining}s remaining)` })
         return
       }
 
@@ -295,8 +297,11 @@ function WorkshopContent() {
         })
       }
 
-      // Set cooldown after successful scan
-      setCooldownUntil(Date.now() + COOLDOWN_MS)
+      // Set per-order cooldown after successful scan
+      setOrderCooldowns(prev => ({
+        ...prev,
+        [order.id]: Date.now() + COOLDOWN_MS
+      }))
       setSearchId('')
     } catch (err) {
       console.error(err)
@@ -338,6 +343,12 @@ function WorkshopContent() {
       durationSeconds
     })
 
+    // Set per-order cooldown after manual move
+    setOrderCooldowns(prev => ({
+      ...prev,
+      [activeOrder.id]: Date.now() + COOLDOWN_MS
+    }))
+
     setActiveOrder(null)
     setShowRejectMenu(false)
     setScanMessage({ type: 'success', text: `✅ Moved to ${nextStage}` })
@@ -369,6 +380,13 @@ function WorkshopContent() {
     return acc
   }
 
+  const getCooldownRemainingForJob = (jobId) => {
+    const expiry = orderCooldowns[jobId]
+    if (!expiry) return 0
+    const remaining = Math.ceil((expiry - Date.now()) / 1000)
+    return remaining > 0 ? remaining : 0
+  }
+
   // Memoize filtered list
   const rushJobs = useMemo(() => activeJobs.filter(j => j.is_rush), [activeJobs])
 
@@ -384,14 +402,6 @@ function WorkshopContent() {
             : 'bg-red-100 border-red-600 text-red-800'
         }`}>
           {scanMessage.text}
-        </div>
-      )}
-
-      {/* Cooldown indicator */}
-      {cooldownRemaining > 0 && (
-        <div className="mb-4 p-3 bg-yellow-100 border-2 border-yellow-600 rounded-xl font-black text-xs text-yellow-800 flex items-center justify-center gap-2">
-          <Clock size={16} className="animate-pulse" />
-          COOLDOWN: {formatTime(cooldownRemaining)} until next scan
         </div>
       )}
 
@@ -448,7 +458,6 @@ function WorkshopContent() {
                       ? 'bg-black text-white border-black'
                       : 'bg-white text-gray-400 border-gray-300'
                   }`}
-                  disabled={cooldownRemaining > 0}
                 >
                   <Keyboard size={14} /> MANUAL
                 </button>
@@ -459,7 +468,6 @@ function WorkshopContent() {
                       ? 'bg-black text-white border-black'
                       : 'bg-white text-gray-400 border-gray-300'
                   }`}
-                  disabled={cooldownRemaining > 0}
                 >
                   <Camera size={14} /> CAMERA
                 </button>
@@ -476,11 +484,11 @@ function WorkshopContent() {
                       value={searchId}
                       onChange={(e) => setSearchId(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleScan()}
-                      disabled={cooldownRemaining > 0 || loading}
+                      disabled={loading}
                     />
                     <button
                       onClick={handleScan}
-                      disabled={cooldownRemaining > 0 || loading}
+                      disabled={loading}
                       className="bg-black text-white px-8 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {loading ? <Loader2 className="animate-spin" /> : <Search />}
@@ -505,19 +513,14 @@ function WorkshopContent() {
                       {cameraError}
                     </div>
                   )}
-                  {!cameraError && !cameraInitialized && cooldownRemaining === 0 && (
+                  {!cameraError && !cameraInitialized && (
                     <div className="text-center p-4 bg-yellow-100 border-2 border-yellow-600 rounded-xl font-black text-xs">
                       Initializing camera...
                     </div>
                   )}
-                  {cameraInitialized && cooldownRemaining === 0 && (
+                  {cameraInitialized && (
                     <div className="text-center text-[10px] font-black text-green-600">
                       Camera active – point at a QR code
-                    </div>
-                  )}
-                  {cooldownRemaining > 0 && (
-                    <div className="text-center p-4 bg-yellow-100 border-2 border-yellow-600 rounded-xl font-black text-xs">
-                      Camera paused – cooldown active
                     </div>
                   )}
                   <button
@@ -526,7 +529,6 @@ function WorkshopContent() {
                       setScanMode('manual')
                     }}
                     className="w-full bg-gray-200 p-3 rounded-xl font-black text-xs border-2 border-black"
-                    disabled={cooldownRemaining > 0}
                   >
                     STOP CAMERA
                   </button>
@@ -544,6 +546,7 @@ function WorkshopContent() {
               )}
               {(activeTab === 'rush' ? rushJobs : activeJobs).map(job => {
                 const currentTime = getJobCurrentTime(job)
+                const cooldownRemaining = getCooldownRemainingForJob(job.id)
                 return (
                   <div
                     key={job.id}
@@ -556,6 +559,11 @@ function WorkshopContent() {
                       <div className="flex items-center gap-2">
                         <p className="font-black text-xl group-hover:text-blue-600">{job.vtiger_id}</p>
                         {job.is_rush && <Flame size={16} className="text-red-500 fill-red-500" />}
+                        {cooldownRemaining > 0 && (
+                          <span className="flex items-center gap-1 text-[8px] font-black text-yellow-600 bg-yellow-50 px-1 py-0.5 rounded">
+                            <Clock size={10} /> {cooldownRemaining}s
+                          </span>
+                        )}
                       </div>
                       <p className="text-[10px] text-blue-600 font-black uppercase flex items-center gap-1">
                         <Package size={10} /> {job.article_code || 'Stock'}
@@ -580,6 +588,11 @@ function WorkshopContent() {
               <div className="flex items-center gap-2">
                 <h2 className="text-5xl font-black tracking-tighter leading-none">{activeOrder.vtiger_id}</h2>
                 {activeOrder.is_rush && <Flame size={24} className="text-red-500 fill-red-500" />}
+                {getCooldownRemainingForJob(activeOrder.id) > 0 && (
+                  <span className="flex items-center gap-1 text-[10px] font-black text-yellow-600 bg-yellow-50 px-2 py-1 rounded">
+                    <Clock size={14} /> {getCooldownRemainingForJob(activeOrder.id)}s cooldown
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2 mt-2">
                 <span className="bg-blue-600 text-white px-2 py-0.5 rounded text-[10px] font-black uppercase">
