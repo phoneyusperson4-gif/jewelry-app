@@ -11,7 +11,7 @@ export default function RootLayout({ children }) {
               ATELIER OS
             </Link>
             <div className="flex gap-6 text-[10px] font-black uppercase tracking-widest">
-              <Link href="/" className="hover:text-blue-400">Order Entry</Link>
+              <Link href="/order-entry" className="hover:text-blue-400">Order Entry</Link>
               <Link href="/casting" className="hover:text-blue-400">Casting</Link> 
               <Link href="/workshop" className="hover:text-blue-400">Workshop</Link>
               <Link href="/admin" className="hover:text-blue-400">Admin</Link>
