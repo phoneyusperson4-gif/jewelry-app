@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import { X } from 'lucide-react'
-import { TimeBreakdown } from '@/app/admin/components/TimeBreakdown'
+import TimeBreakdown from '@/app/admin/components/TimeBreakdown'
 
 /**
  * Full-screen modal showing detailed order info and a production timeline.
